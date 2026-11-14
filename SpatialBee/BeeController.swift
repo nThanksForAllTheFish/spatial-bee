@@ -30,6 +30,9 @@ final class BeeController: ObservableObject {
     @Published var pointingAxis: PointingAxis = .topEdge {
         didSet { motion.axis = pointingAxis }
     }
+    @Published var renderer: SpatialRenderer = .hrtfHQ {
+        didSet { audio.renderer = renderer }
+    }
     /// When on, the insect circles the head on its own. Useful in the simulator,
     /// which has no motion sensors, and as a sanity check on a device.
     @Published var autoOrbit = false
@@ -53,6 +56,9 @@ final class BeeController: ObservableObject {
     private var hasCenteredOnce = false
     private var orbitAngle: Double = 0
     private var wobble = SIMD3<Double>(0, 0, 0)
+    /// Smoothed horizontal unit direction in the listener frame (x, z). Held near the
+    /// zenith, where azimuth is undefined and would otherwise spin with any jitter.
+    private var azimuthDir = SIMD2<Double>(0, -1)
     private var lastDistance: Double?
     private var lastTimestamp: CFTimeInterval?
     private var smoothedRadialVelocity: Double = 0
@@ -62,6 +68,7 @@ final class BeeController: ObservableObject {
     func start() {
         guard !isRunning else { return }
         audio.species = species
+        audio.renderer = renderer
         motion.axis = pointingAxis
         audio.start()
         motion.start()
@@ -107,17 +114,36 @@ final class BeeController: ObservableObject {
         lastTimestamp = now
 
         // 1. Direction in the listener frame (x right, y up, z backward).
-        let direction: SIMD3<Double>
+        let rawDirection: SIMD3<Double>
         if autoOrbit || !motion.isAvailable {
             orbitAngle += 2 * .pi * orbitRate * dt
             // Circle at ear height with a gentle bob.
             let bob = 0.15 * sin(orbitAngle * 0.7)
-            direction = simd_normalize(SIMD3(sin(orbitAngle), bob, -cos(orbitAngle)))
+            rawDirection = simd_normalize(SIMD3(sin(orbitAngle), bob, -cos(orbitAngle)))
         } else {
-            direction = worldToListener(motion.pointing)
+            rawDirection = worldToListener(motion.pointing)
         }
 
-        // 2. Random-walk wobble, a few centimeters, so the insect feels alive.
+        // 1b. Pole handling. Split into elevation and a horizontal unit direction, and
+        // smooth the horizontal part with a time constant that grows as cos^2(el) shrinks.
+        // Level: ~50 ms, barely noticeable. Straight up: seconds, so azimuth holds its
+        // last meaningful value instead of spinning with jitter and wobble.
+        let sinEl = max(-1, min(1, rawDirection.y))
+        let cosEl = sqrt(max(0, 1 - sinEl * sinEl))
+        let rawHorizontal = SIMD2(rawDirection.x, rawDirection.z)
+        let rawHorizontalLength = simd_length(rawHorizontal)
+        if rawHorizontalLength > 1e-3 {
+            let target = rawHorizontal / rawHorizontalLength
+            let tau = 0.05 / max(0.02, cosEl * cosEl)
+            let k = 1 - exp(-dt / tau)
+            azimuthDir += (target - azimuthDir) * k
+            let n = simd_length(azimuthDir)
+            if n > 1e-6 { azimuthDir /= n }
+        }
+        let direction = SIMD3(azimuthDir.x * cosEl, sinEl, azimuthDir.y * cosEl)
+
+        // 2. Random-walk wobble, a few centimeters, so the insect feels alive. Its
+        // horizontal part is scaled by cos(el) so it cannot swing azimuth at the pole.
         let step = 0.02
         wobble += SIMD3(
             Double.random(in: -step...step),
@@ -128,8 +154,9 @@ final class BeeController: ObservableObject {
         let wobbleLimit = 0.08
         let wobbleLength = simd_length(wobble)
         if wobbleLength > wobbleLimit { wobble *= wobbleLimit / wobbleLength }
+        let shapedWobble = SIMD3(wobble.x * cosEl, wobble.y, wobble.z * cosEl)
 
-        let position = direction * radius + wobble
+        let position = direction * radius + shapedWobble
         let distance = simd_length(position)
 
         // 3. Doppler from radial velocity. Positive velocity is receding.

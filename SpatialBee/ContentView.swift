@@ -47,6 +47,12 @@ struct ContentView: View {
                 }
 
                 Section("Control") {
+                    Picker("Renderer", selection: $controller.renderer) {
+                        ForEach(SpatialRenderer.allCases) { renderer in
+                            Text(renderer.label).tag(renderer)
+                        }
+                    }
+
                     Picker("Pointing axis", selection: $controller.pointingAxis) {
                         ForEach(PointingAxis.allCases) { axis in
                             Text(axis.label).tag(axis)

@@ -1,6 +1,36 @@
 import AVFoundation
 import Combine
 
+/// Which binaural renderer the environment node uses. All three are Apple's; they differ
+/// in HRTF data set and processing, so elevation cues differ audibly between them.
+enum SpatialRenderer: String, CaseIterable, Identifiable {
+    /// High-quality HRTF, the classic AVAudioEngine binaural renderer.
+    case hrtfHQ
+    /// The older, lighter HRTF variant.
+    case hrtf
+    /// Automatic algorithm with the output type forced to headphones. On iOS 13+ this
+    /// engages the newer spatial renderer used by system spatial audio.
+    case appleSpatial
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .hrtfHQ: return "HRTF-HQ"
+        case .hrtf: return "HRTF"
+        case .appleSpatial: return "Apple spatial"
+        }
+    }
+
+    var algorithm: AVAudio3DMixingRenderingAlgorithm {
+        switch self {
+        case .hrtfHQ: return .HRTFHQ
+        case .hrtf: return .HRTF
+        case .appleSpatial: return .auto
+        }
+    }
+}
+
 /// Owns the AVAudioEngine graph:
 ///
 ///     InsectSynth (mono source) -> AVAudioEnvironmentNode (HRTF) -> main mixer -> output
@@ -70,6 +100,19 @@ final class SpatialAudioEngine: ObservableObject {
         set { synth.species = newValue }
     }
 
+    var renderer: SpatialRenderer = .hrtfHQ {
+        didSet { applyRenderer() }
+    }
+
+    private func applyRenderer() {
+        guard let source else { return }
+        // Output type is consulted only by the Auto algorithm. Headphones is the truth
+        // here; Bluetooth routes would otherwise be guessed at.
+        environment.outputType = .headphones
+        source.renderingAlgorithm = renderer.algorithm
+        if isRunning { statusText = describeRendering() }
+    }
+
     // MARK: Graph
 
     private func buildGraphIfNeeded() {
@@ -108,13 +151,10 @@ final class SpatialAudioEngine: ObservableObject {
         environment.reverbParameters.loadFactoryReverbPreset(.smallRoom)
         environment.reverbParameters.level = -24
 
-        // High-quality HRTF is the most localizable algorithm on iOS. It only applies
-        // when the output is stereo headphones; on a speaker the node falls back to
-        // panning on its own.
-        node.renderingAlgorithm = .HRTFHQ
         node.reverbBlend = 0.12
         node.sourceMode = .pointSource
         node.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
+        applyRenderer()
 
         engine.prepare()
     }
@@ -129,7 +169,7 @@ final class SpatialAudioEngine: ObservableObject {
         case .equalPowerPanning: algorithm = "Equal-power panning"
         case .stereoPassThrough: algorithm = "Stereo pass-through"
         case .soundField: algorithm = "Sound field"
-        case .auto: algorithm = "Auto"
+        case .auto: algorithm = "Apple spatial (auto, headphones)"
         @unknown default: algorithm = "Unknown"
         }
         let rate = Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)
