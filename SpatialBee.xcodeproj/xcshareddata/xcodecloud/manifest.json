@@ -1,0 +1,9 @@
+{
+  "id" : "6965c66f-4c4e-4fc9-b48c-75d997b12b9b",
+  "targets" : [
+    {
+      "id" : "fdd2661e-5004-4922-881f-1878e5ca3080",
+      "name" : "SpatialBee"
+    }
+  ]
+}
