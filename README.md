@@ -33,6 +33,16 @@ from the `docs` folder; motion access requires HTTPS and a tap on Start, and on 
 ring/silent switch must be on ring for Web Audio to be audible. Auto-orbit works anywhere,
 including on a desktop browser, for checking the audio without a phone.
 
+## Tuning without a rebuild
+
+`docs/config.json` holds every sound parameter that is a number: renderer, gain, reverb,
+distance model, wobble, a high-shelf tilt, and per-species fundamental, harmonic count and
+rolloff, noise level and cutoff, pitch wander. Both the native app and the web page fetch it
+at start and on Reload. Edit the file, push, wait about a minute for Pages, tap Reload. The
+native app's Tuning section edits the same values live with sliders; Reset returns to the
+last loaded file. Unknown keys are ignored and missing keys fall back to built-in defaults,
+so the file can be partial.
+
 ## Running the native app on the phone
 
 1. Open `SpatialBee.xcodeproj` in Xcode, select the SpatialBee target, and set your

@@ -5,3 +5,4 @@ DerivedData/
 build/
 .DS_Store
 IT-Request-*.md
+.claude/

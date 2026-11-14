@@ -111,6 +111,8 @@
   <div class="row"><label>Audio</label><span class="value" id="audioOut">Stopped</span></div>
   <div class="row"><label>Motion</label><span class="value" id="motionOut">Not started</span></div>
   <div class="row"><label>Panning</label><span class="value" id="panOut">—</span></div>
+  <div class="row"><label>Config</label><span class="value" id="configOut">Built-in defaults</span></div>
+  <button id="reloadBtn" style="width:100%;margin-top:8px;background:#2a323a;color:var(--text)">Reload config</button>
   <p class="hint" id="noteOut"></p>
 </div>
 
@@ -118,15 +120,74 @@
 (() => {
   'use strict';
 
-  // ---------- Species ----------
+  // ---------- Config ----------
+  // Same config.json the native app reads. Defaults here match the shipped file.
   // Harmonic series must reach the pinna band (roughly 5 to 12 kHz) or the HRTF has
-  // nothing to shape and elevation collapses to left-right panning. A gentle power-law
-  // rolloff keeps the series bright without sounding like a buzzer.
-  const series = (n, p) => Array.from({ length: n }, (_, k) => Math.pow(k + 1, -p));
-  const SPECIES = {
-    bee:      { f0: 230, harmonics: series(40, 0.8), noise: .18, noiseLP: 9000,  wander: .05 },
-    mosquito: { f0: 620, harmonics: series(16, 1.0), noise: .06, noiseLP: 10000, wander: .08 },
+  // nothing to shape and elevation collapses to left-right panning.
+  let CONFIG = {
+    version: 0,
+    gain: 0.22, reverbBlend: 0.12,
+    distance: { referenceDistance: 0.25, maximumDistance: 6, rolloffFactor: 1.2 },
+    wobble: { limitCm: 8, stepCm: 2 },
+    highShelf: { frequencyHz: 5000, gainDb: 0 },
+    species: {
+      bee:      { f0: 230, harmonicCount: 40, harmonicRolloff: 0.8, noiseLevel: .18, noiseCutoffHz: 9000,  pitchWander: .05 },
+      mosquito: { f0: 620, harmonicCount: 16, harmonicRolloff: 1.0, noiseLevel: .06, noiseCutoffHz: 10000, pitchWander: .08 },
+    },
   };
+  const series = (n, p) => Array.from({ length: n }, (_, k) => Math.pow(k + 1, -p));
+  // View of CONFIG in the shape the synth code uses.
+  let SPECIES = {};
+  function rebuildSpecies() {
+    SPECIES = {};
+    for (const [name, s] of Object.entries(CONFIG.species)) {
+      SPECIES[name] = { f0: s.f0, harmonics: series(s.harmonicCount, s.harmonicRolloff),
+        noise: s.noiseLevel, noiseLP: s.noiseCutoffHz, wander: s.pitchWander };
+    }
+  }
+  rebuildSpecies();
+
+  async function loadConfig() {
+    setText('configOut', 'Loading…');
+    try {
+      const r = await fetch('./config.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const cfg = await r.json();
+      CONFIG = Object.assign({}, CONFIG, cfg, {
+        distance: Object.assign({}, CONFIG.distance, cfg.distance || {}),
+        wobble: Object.assign({}, CONFIG.wobble, cfg.wobble || {}),
+        highShelf: Object.assign({}, CONFIG.highShelf, cfg.highShelf || {}),
+        species: Object.assign({}, CONFIG.species, cfg.species || {}),
+      });
+      rebuildSpecies();
+      applyConfig();
+      setText('configOut', 'Loaded v' + CONFIG.version + ' at ' + new Date().toLocaleTimeString());
+    } catch (err) {
+      setText('configOut', 'Fetch failed (' + err.message + '), keeping current values');
+    }
+  }
+
+  // Push CONFIG into the live audio graph, if it exists.
+  function applyConfig() {
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    for (const name of Object.keys(SPECIES)) periodicWaves[name] = makeWave(SPECIES[name].harmonics);
+    applySpecies();
+    mix.gain.setTargetAtTime(CONFIG.gain, now, 0.05);
+    reverbGain.gain.setTargetAtTime(CONFIG.reverbBlend, now, 0.05);
+    shelf.frequency.setTargetAtTime(CONFIG.highShelf.frequencyHz, now, 0.05);
+    shelf.gain.setTargetAtTime(CONFIG.highShelf.gainDb, now, 0.05);
+    panner.refDistance = CONFIG.distance.referenceDistance;
+    panner.maxDistance = CONFIG.distance.maximumDistance;
+    panner.rolloffFactor = CONFIG.distance.rolloffFactor;
+  }
+
+  function makeWave(h) {
+    const real = new Float32Array(h.length + 1), imag = new Float32Array(h.length + 1);
+    const norm = h.reduce((a, b) => a + b, 0);
+    h.forEach((a, i) => { imag[i + 1] = a / norm; });
+    return ctx.createPeriodicWave(real, imag, { disableNormalization: true });
+  }
 
   // ---------- State ----------
   const S = {
@@ -150,18 +211,12 @@
   };
 
   // ---------- Audio graph ----------
-  let ctx, osc, toneGain, noiseSrc, noiseFilter, noiseGain, mix, bandwidth, panner, master, periodicWaves = {};
+  let ctx, osc, toneGain, noiseSrc, noiseFilter, noiseGain, mix, shelf, bandwidth, panner, reverbGain, master, periodicWaves = {};
 
   function buildAudio() {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
 
-    for (const name of Object.keys(SPECIES)) {
-      const h = SPECIES[name].harmonics;
-      const real = new Float32Array(h.length + 1), imag = new Float32Array(h.length + 1);
-      const norm = h.reduce((a, b) => a + b, 0);
-      h.forEach((a, i) => { imag[i + 1] = a / norm; });
-      periodicWaves[name] = ctx.createPeriodicWave(real, imag, { disableNormalization: true });
-    }
+    for (const name of Object.keys(SPECIES)) periodicWaves[name] = makeWave(SPECIES[name].harmonics);
 
     osc = ctx.createOscillator();
     osc.setPeriodicWave(periodicWaves[S.species]);
@@ -182,7 +237,13 @@
     noiseGain.gain.value = SPECIES[S.species].noise;
 
     mix = ctx.createGain();
-    mix.gain.value = 0.22;
+    mix.gain.value = CONFIG.gain;
+
+    // High-shelf tilt for the pinna-band experiment.
+    shelf = ctx.createBiquadFilter();
+    shelf.type = 'highshelf';
+    shelf.frequency.value = CONFIG.highShelf.frequencyHz;
+    shelf.gain.value = CONFIG.highShelf.gainDb;
 
     // Bandwidth control for the elevation experiment: a low-pass on the whole insect
     // before spatialization. Pull it below ~4 kHz and the up-down cue should vanish.
@@ -194,9 +255,9 @@
     panner = ctx.createPanner();
     panner.panningModel = 'HRTF';
     panner.distanceModel = 'inverse';
-    panner.refDistance = 0.25;
-    panner.maxDistance = 6;
-    panner.rolloffFactor = 1.2;
+    panner.refDistance = CONFIG.distance.referenceDistance;
+    panner.maxDistance = CONFIG.distance.maximumDistance;
+    panner.rolloffFactor = CONFIG.distance.rolloffFactor;
     panner.positionX.value = 0; panner.positionY.value = 0; panner.positionZ.value = -1;
 
     // Listener at the origin facing -z, up +y. Head tracking would drive these.
@@ -211,15 +272,15 @@
     // A short synthetic room so the source sits outside the head.
     const reverb = ctx.createConvolver();
     reverb.buffer = makeImpulse(0.35, 2.5);
-    const reverbGain = ctx.createGain();
-    reverbGain.gain.value = 0.12;
+    reverbGain = ctx.createGain();
+    reverbGain.gain.value = CONFIG.reverbBlend;
 
     master = ctx.createGain();
     master.gain.value = 1;
 
     osc.connect(toneGain).connect(mix);
     noiseSrc.connect(noiseFilter).connect(noiseGain).connect(mix);
-    mix.connect(bandwidth).connect(panner).connect(master);
+    mix.connect(shelf).connect(bandwidth).connect(panner).connect(master);
     panner.connect(reverb).connect(reverbGain).connect(master);
     master.connect(ctx.destination);
 
@@ -401,11 +462,11 @@
       dir = worldToListener(S.pointing);
     }
 
-    // Wobble: random walk with mean reversion, capped at ~8 cm.
-    const step = 0.02;
+    // Wobble: random walk with mean reversion, capped by the config.
+    const step = CONFIG.wobble.stepCm / 100, limit = CONFIG.wobble.limitCm / 100;
     for (let i = 0; i < 3; i++) S.wobble[i] = (S.wobble[i] + (Math.random() * 2 - 1) * step) * 0.9;
     const wl = Math.hypot(...S.wobble);
-    if (wl > 0.08) for (let i = 0; i < 3; i++) S.wobble[i] *= 0.08 / wl;
+    if (wl > limit && wl > 0) for (let i = 0; i < 3; i++) S.wobble[i] *= limit / wl;
 
     const p = [dir[0] * S.radius + S.wobble[0], dir[1] * S.radius + S.wobble[1], dir[2] * S.radius + S.wobble[2]];
     const dist = Math.hypot(...p);
@@ -532,9 +593,12 @@
     setText('rateLabel', S.orbitRate.toFixed(2) + ' rev/s');
   });
 
+  $('reloadBtn').addEventListener('click', loadConfig);
+
   if (!window.isSecureContext) {
     setText('noteOut', 'Not a secure context: motion access needs HTTPS. Orbit mode still works.');
   }
+  if (location.protocol !== 'file:') loadConfig();
 })();
 </script>
 </body>

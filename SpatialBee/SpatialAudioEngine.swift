@@ -95,13 +95,23 @@ final class SpatialAudioEngine: ObservableObject {
         source?.position = p
     }
 
-    var species: InsectSpecies {
-        get { synth.species }
-        set { synth.species = newValue }
-    }
-
     var renderer: SpatialRenderer = .hrtfHQ {
         didSet { applyRenderer() }
+    }
+
+    /// Spatial parameters from the tuning config: distance model and reverb.
+    var tuning = TuningConfig.defaults {
+        didSet { applyTuning() }
+    }
+
+    private func applyTuning() {
+        let distance = environment.distanceAttenuationParameters
+        distance.distanceAttenuationModel = .inverse
+        distance.referenceDistance = Float(tuning.distance.referenceDistance)
+        distance.maximumDistance = Float(tuning.distance.maximumDistance)
+        distance.rolloffFactor = Float(tuning.distance.rolloffFactor)
+        environment.reverbParameters.level = Float(tuning.reverbLevelDb)
+        source?.reverbBlend = Float(tuning.reverbBlend)
     }
 
     private func applyRenderer() {
@@ -139,21 +149,13 @@ final class SpatialAudioEngine: ObservableObject {
             up: AVAudio3DVector(x: 0, y: 1, z: 0)
         )
 
-        // Distance rolloff tuned for a source within arm's reach.
-        let distance = environment.distanceAttenuationParameters
-        distance.distanceAttenuationModel = .inverse
-        distance.referenceDistance = 0.25
-        distance.maximumDistance = 6.0
-        distance.rolloffFactor = 1.2
-
         // A touch of small-room reverb helps the source sit outside the head.
         environment.reverbParameters.enable = true
         environment.reverbParameters.loadFactoryReverbPreset(.smallRoom)
-        environment.reverbParameters.level = -24
 
-        node.reverbBlend = 0.12
         node.sourceMode = .pointSource
         node.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
+        applyTuning()
         applyRenderer()
 
         engine.prepare()

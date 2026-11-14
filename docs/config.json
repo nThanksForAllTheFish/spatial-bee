@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "note": "Fetched by the native app and the web page at start and on Reload. Edit, push, tap Reload.",
+  "renderer": "hrtfHQ",
+  "gain": 0.22,
+  "reverbBlend": 0.12,
+  "reverbLevelDb": -24,
+  "distance": { "referenceDistance": 0.25, "maximumDistance": 6.0, "rolloffFactor": 1.2 },
+  "wobble": { "limitCm": 8, "stepCm": 2 },
+  "highShelf": { "frequencyHz": 5000, "gainDb": 0 },
+  "species": {
+    "bee":      { "f0": 230, "harmonicCount": 40, "harmonicRolloff": 0.8, "noiseLevel": 0.18, "noiseCutoffHz": 9000,  "pitchWander": 0.05 },
+    "mosquito": { "f0": 620, "harmonicCount": 16, "harmonicRolloff": 1.0, "noiseLevel": 0.06, "noiseCutoffHz": 10000, "pitchWander": 0.08 }
+  }
+}

@@ -3,13 +3,14 @@ import Combine
 import QuartzCore
 import simd
 
-/// Glue between the phone's pointing direction and the spatial audio source.
+/// Glue between the phone's pointing direction and the spatial audio source, plus the
+/// owner of the tuning config.
 ///
 /// Every frame it takes the world-frame pointing vector (or a synthetic orbit when
-/// Auto-orbit is on), expresses it in the listener's frame, pushes it out to a chosen
-/// radius, adds a small random-walk wobble so the insect never sits perfectly still,
-/// and hands the result to the audio engine. Radial velocity drives a Doppler ratio
-/// on the synthesizer.
+/// Auto-orbit is on), expresses it in the listener's frame, holds azimuth steady near
+/// the zenith, pushes it out to a chosen radius, adds a small random-walk wobble so the
+/// insect never sits perfectly still, and hands the result to the audio engine. Radial
+/// velocity drives a Doppler ratio on the synthesizer.
 @MainActor
 final class BeeController: ObservableObject {
 
@@ -19,13 +20,13 @@ final class BeeController: ObservableObject {
     // MARK: User settings
 
     @Published var species: InsectSpecies = .bee {
-        didSet { audio.species = species }
+        didSet { applySpecies() }
     }
     /// Distance from the head center, meters.
     @Published var radius: Double = 0.6
     /// Low-pass on the insect before spatialization, Hz.
     @Published var bandwidthHz: Double = 16_000 {
-        didSet { audio.synth.cutoffHz = bandwidthHz }
+        didSet { audio.synth.params.cutoffHz = bandwidthHz }
     }
     @Published var pointingAxis: PointingAxis = .topEdge {
         didSet { motion.axis = pointingAxis }
@@ -39,41 +40,129 @@ final class BeeController: ObservableObject {
     /// Revolutions per second for auto-orbit. Positive is counterclockwise seen from above.
     @Published var orbitRate: Double = 0.15
 
+    // MARK: Tuning (mirrors of the config, editable live)
+
+    @Published var config = TuningConfig.defaults
+    @Published private(set) var configStatus = "Built-in defaults"
+    @Published private(set) var configLoading = false
+
+    @Published var gain: Double = 0.22 { didSet { if !applying { config.gain = gain; pushSynthParams() } } }
+    @Published var reverbBlend: Double = 0.12 { didSet { if !applying { config.reverbBlend = reverbBlend; audio.tuning = config } } }
+    @Published var shelfGainDb: Double = 0 { didSet { if !applying { config.highShelf.gainDb = shelfGainDb; pushSynthParams() } } }
+    @Published var shelfFrequencyHz: Double = 5000 { didSet { if !applying { config.highShelf.frequencyHz = shelfFrequencyHz; pushSynthParams() } } }
+    @Published var harmonicRolloff: Double = 0.8 { didSet { if !applying { updateSpecies { $0.harmonicRolloff = harmonicRolloff } } } }
+    @Published var noiseLevel: Double = 0.18 { didSet { if !applying { updateSpecies { $0.noiseLevel = noiseLevel } } } }
+    @Published var wobbleLimitCm: Double = 8 { didSet { if !applying { config.wobble.limitCm = wobbleLimitCm } } }
+
     // MARK: Readouts
 
     @Published private(set) var isRunning = false
-    /// Azimuth in degrees, 0 ahead, positive to the right.
     @Published private(set) var azimuthDegrees: Double = 0
-    /// Elevation in degrees, positive above the ears.
     @Published private(set) var elevationDegrees: Double = 0
     @Published private(set) var distanceMeters: Double = 0
 
     // MARK: Internals
 
     private var displayLink: CADisplayLink?
-    /// Yaw of the listener's forward direction in the world frame, radians.
     private var forwardYaw: Double = 0
     private var hasCenteredOnce = false
     private var orbitAngle: Double = 0
     private var wobble = SIMD3<Double>(0, 0, 0)
-    /// Smoothed horizontal unit direction in the listener frame (x, z). Held near the
-    /// zenith, where azimuth is undefined and would otherwise spin with any jitter.
     private var azimuthDir = SIMD2<Double>(0, -1)
     private var lastDistance: Double?
     private var lastTimestamp: CFTimeInterval?
     private var smoothedRadialVelocity: Double = 0
+    private var applying = false
+
+    init() {
+        applyConfig(TuningConfig.defaults, status: "Built-in defaults")
+        Task { await reloadConfig() }
+    }
+
+    // MARK: Config
+
+    func reloadConfig() async {
+        configLoading = true
+        defer { configLoading = false }
+        do {
+            let fetched = try await TuningConfigLoader.fetch()
+            let stamp = Date().formatted(date: .omitted, time: .standard)
+            applyConfig(fetched, status: "Loaded v\(fetched.version) at \(stamp)")
+        } catch {
+            configStatus = "Fetch failed: \(error.localizedDescription). Keeping current values."
+        }
+    }
+
+    /// Discard live edits and go back to the last loaded config.
+    func resetToLoadedConfig() {
+        applyConfig(lastLoaded, status: configStatus)
+    }
+
+    private var lastLoaded = TuningConfig.defaults
+
+    private func applyConfig(_ c: TuningConfig, status: String) {
+        applying = true
+        defer { applying = false }
+        lastLoaded = c
+        config = c
+        configStatus = status
+
+        renderer = SpatialRenderer(rawValue: c.renderer) ?? .hrtfHQ
+        audio.renderer = renderer
+        audio.tuning = c
+
+        gain = c.gain
+        reverbBlend = c.reverbBlend
+        shelfGainDb = c.highShelf.gainDb
+        shelfFrequencyHz = c.highShelf.frequencyHz
+        wobbleLimitCm = c.wobble.limitCm
+
+        applySpecies()
+    }
+
+    private func applySpecies() {
+        let s = config.species(species)
+        let wasApplying = applying
+        applying = true
+        harmonicRolloff = s.harmonicRolloff
+        noiseLevel = s.noiseLevel
+        applying = wasApplying
+        audio.synth.setHarmonics(count: s.harmonicCount, rolloff: s.harmonicRolloff)
+        pushSynthParams()
+    }
+
+    private func updateSpecies(_ edit: (inout TuningConfig.Species) -> Void) {
+        var s = config.species(species)
+        edit(&s)
+        config.species[species.rawValue] = s
+        audio.synth.setHarmonics(count: s.harmonicCount, rolloff: s.harmonicRolloff)
+        pushSynthParams()
+    }
+
+    private func pushSynthParams() {
+        let s = config.species(species)
+        var p = audio.synth.params
+        p.f0 = s.f0
+        p.pitchWander = s.pitchWander
+        p.noiseLevel = s.noiseLevel
+        p.noiseCutoffHz = s.noiseCutoffHz
+        p.gain = config.gain
+        p.cutoffHz = bandwidthHz
+        p.shelfFrequencyHz = config.highShelf.frequencyHz
+        p.shelfGainDb = config.highShelf.gainDb
+        audio.synth.params = p
+    }
 
     // MARK: Control
 
     func start() {
         guard !isRunning else { return }
-        audio.species = species
         audio.renderer = renderer
         motion.axis = pointingAxis
         audio.start()
+        audio.tuning = config   // nodes exist now; re-apply reverb blend on the source
         motion.start()
         if !hasCenteredOnce {
-            // Give CoreMotion a moment to settle before taking the first forward reference.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.recenter()
             }
@@ -92,7 +181,6 @@ final class BeeController: ObservableObject {
     }
 
     /// Make "straight ahead" the direction the phone is pointing right now.
-    /// Hold the phone out in front of your face and tap this.
     func recenter() {
         let p = motion.pointing
         forwardYaw = atan2(p.y, p.x)
@@ -117,17 +205,14 @@ final class BeeController: ObservableObject {
         let rawDirection: SIMD3<Double>
         if autoOrbit || !motion.isAvailable {
             orbitAngle += 2 * .pi * orbitRate * dt
-            // Circle at ear height with a gentle bob.
             let bob = 0.15 * sin(orbitAngle * 0.7)
             rawDirection = simd_normalize(SIMD3(sin(orbitAngle), bob, -cos(orbitAngle)))
         } else {
             rawDirection = worldToListener(motion.pointing)
         }
 
-        // 1b. Pole handling. Split into elevation and a horizontal unit direction, and
-        // smooth the horizontal part with a time constant that grows as cos^2(el) shrinks.
-        // Level: ~50 ms, barely noticeable. Straight up: seconds, so azimuth holds its
-        // last meaningful value instead of spinning with jitter and wobble.
+        // 1b. Pole handling: smooth the horizontal direction with a time constant that
+        // grows as cos^2(el) shrinks, so azimuth holds near the zenith instead of spinning.
         let sinEl = max(-1, min(1, rawDirection.y))
         let cosEl = sqrt(max(0, 1 - sinEl * sinEl))
         let rawHorizontal = SIMD2(rawDirection.x, rawDirection.z)
@@ -142,18 +227,18 @@ final class BeeController: ObservableObject {
         }
         let direction = SIMD3(azimuthDir.x * cosEl, sinEl, azimuthDir.y * cosEl)
 
-        // 2. Random-walk wobble, a few centimeters, so the insect feels alive. Its
-        // horizontal part is scaled by cos(el) so it cannot swing azimuth at the pole.
-        let step = 0.02
+        // 2. Random-walk wobble; horizontal part scaled by cos(el) so it cannot swing
+        // azimuth at the pole.
+        let step = config.wobble.stepCm / 100
         wobble += SIMD3(
             Double.random(in: -step...step),
             Double.random(in: -step...step),
             Double.random(in: -step...step)
         )
-        wobble *= 0.9  // mean reversion keeps it within ~10 cm
-        let wobbleLimit = 0.08
+        wobble *= 0.9
+        let wobbleLimit = config.wobble.limitCm / 100
         let wobbleLength = simd_length(wobble)
-        if wobbleLength > wobbleLimit { wobble *= wobbleLimit / wobbleLength }
+        if wobbleLength > wobbleLimit, wobbleLength > 0 { wobble *= wobbleLimit / wobbleLength }
         let shapedWobble = SIMD3(wobble.x * cosEl, wobble.y, wobble.z * cosEl)
 
         let position = direction * radius + shapedWobble
@@ -178,7 +263,6 @@ final class BeeController: ObservableObject {
     }
 
     /// Convert a world-frame unit vector (z up) into the listener frame.
-    /// Listener forward is the world direction at yaw `forwardYaw`; listener up is world +z.
     private func worldToListener(_ v: SIMD3<Double>) -> SIMD3<Double> {
         let forward = SIMD3(cos(forwardYaw), sin(forwardYaw), 0.0)
         let up = SIMD3(0.0, 0.0, 1.0)

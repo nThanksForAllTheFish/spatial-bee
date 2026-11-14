@@ -69,6 +69,32 @@ struct ContentView: View {
                     }
                 }
 
+                Section {
+                    HStack {
+                        Button(controller.configLoading ? "Loading…" : "Reload config") {
+                            Task { await controller.reloadConfig() }
+                        }
+                        .disabled(controller.configLoading)
+                        Spacer()
+                        Button("Reset") { controller.resetToLoadedConfig() }
+                    }
+                    Text(controller.configStatus)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    tuningSlider("Gain", value: $controller.gain, range: 0.05...0.6, format: "%.2f")
+                    tuningSlider("Reverb blend", value: $controller.reverbBlend, range: 0...0.5, format: "%.2f")
+                    tuningSlider("High-shelf gain", value: $controller.shelfGainDb, range: -12...12, format: "%+.0f dB", step: 1)
+                    tuningSlider("High-shelf from", value: $controller.shelfFrequencyHz, range: 2000...10000, format: "%.0f Hz", step: 250)
+                    tuningSlider("Harmonic rolloff", value: $controller.harmonicRolloff, range: 0.3...2.0, format: "%.2f")
+                    tuningSlider("Noise level", value: $controller.noiseLevel, range: 0...0.5, format: "%.2f")
+                    tuningSlider("Wobble", value: $controller.wobbleLimitCm, range: 0...20, format: "%.0f cm", step: 1)
+                } header: {
+                    Text("Tuning")
+                } footer: {
+                    Text("Values come from config.json on the Pages site. Sliders edit them live; Reload fetches the published file again.")
+                }
+
                 Section("Position") {
                     LabeledContent("Azimuth", value: String(format: "%+.0f°", controller.azimuthDegrees))
                     LabeledContent("Elevation", value: String(format: "%+.0f°", controller.elevationDegrees))
@@ -98,6 +124,25 @@ struct ContentView: View {
             controller.stop()
         } else {
             controller.start()
+        }
+    }
+
+    @ViewBuilder
+    private func tuningSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>,
+                              format: String, step: Double? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: format, value.wrappedValue))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            if let step {
+                Slider(value: value, in: range, step: step)
+            } else {
+                Slider(value: value, in: range)
+            }
         }
     }
 }
