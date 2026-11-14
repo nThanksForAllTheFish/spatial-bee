@@ -70,6 +70,11 @@
     <div style="display:flex;justify-content:space-between"><span>Distance</span><span class="value" id="distLabel">0.60 m</span></div>
     <input type="range" id="distRange" min="0.15" max="3" step="0.01" value="0.6">
   </div>
+  <div class="row" style="display:block">
+    <div style="display:flex;justify-content:space-between"><span>Bandwidth</span><span class="value" id="bwLabel">16.0 kHz</span></div>
+    <input type="range" id="bwRange" min="1000" max="16000" step="100" value="16000">
+    <p class="hint" style="margin-top:4px">Up-down cues live above about 5 kHz. Lower this and elevation should collapse to left-right.</p>
+  </div>
 </div>
 
 <h2>Control</h2>
@@ -114,15 +119,20 @@
   'use strict';
 
   // ---------- Species ----------
+  // Harmonic series must reach the pinna band (roughly 5 to 12 kHz) or the HRTF has
+  // nothing to shape and elevation collapses to left-right panning. A gentle power-law
+  // rolloff keeps the series bright without sounding like a buzzer.
+  const series = (n, p) => Array.from({ length: n }, (_, k) => Math.pow(k + 1, -p));
   const SPECIES = {
-    bee:      { f0: 230, harmonics: [1, .7, .55, .4, .3, .22, .15, .1, .07, .05], noise: .12, wander: .05 },
-    mosquito: { f0: 620, harmonics: [1, .5, .25, .12, .06],                      noise: .03, wander: .08 },
+    bee:      { f0: 230, harmonics: series(40, 0.8), noise: .18, noiseLP: 9000,  wander: .05 },
+    mosquito: { f0: 620, harmonics: series(16, 1.0), noise: .06, noiseLP: 10000, wander: .08 },
   };
 
   // ---------- State ----------
   const S = {
     species: 'bee',
     radius: 0.6,
+    bandwidthHz: 16000,
     axis: 'top',
     autoOrbit: false,
     orbitRate: 0.15,
@@ -139,7 +149,7 @@
   };
 
   // ---------- Audio graph ----------
-  let ctx, osc, toneGain, noiseSrc, noiseFilter, noiseGain, mix, panner, master, periodicWaves = {};
+  let ctx, osc, toneGain, noiseSrc, noiseFilter, noiseGain, mix, bandwidth, panner, master, periodicWaves = {};
 
   function buildAudio() {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -166,12 +176,19 @@
     noiseSrc = ctx.createBufferSource();
     noiseSrc.buffer = buf; noiseSrc.loop = true;
     noiseFilter = ctx.createBiquadFilter();
-    noiseFilter.type = 'lowpass'; noiseFilter.frequency.value = 1800;
+    noiseFilter.type = 'lowpass'; noiseFilter.frequency.value = SPECIES[S.species].noiseLP;
     noiseGain = ctx.createGain();
     noiseGain.gain.value = SPECIES[S.species].noise;
 
     mix = ctx.createGain();
     mix.gain.value = 0.22;
+
+    // Bandwidth control for the elevation experiment: a low-pass on the whole insect
+    // before spatialization. Pull it below ~4 kHz and the up-down cue should vanish.
+    bandwidth = ctx.createBiquadFilter();
+    bandwidth.type = 'lowpass';
+    bandwidth.Q.value = 0.5;
+    bandwidth.frequency.value = S.bandwidthHz;
 
     panner = ctx.createPanner();
     panner.panningModel = 'HRTF';
@@ -201,7 +218,7 @@
 
     osc.connect(toneGain).connect(mix);
     noiseSrc.connect(noiseFilter).connect(noiseGain).connect(mix);
-    mix.connect(panner).connect(master);
+    mix.connect(bandwidth).connect(panner).connect(master);
     panner.connect(reverb).connect(reverbGain).connect(master);
     master.connect(ctx.destination);
 
@@ -222,6 +239,7 @@
     if (!ctx) return;
     osc.setPeriodicWave(periodicWaves[S.species]);
     noiseGain.gain.setTargetAtTime(SPECIES[S.species].noise, ctx.currentTime, 0.05);
+    noiseFilter.frequency.setTargetAtTime(SPECIES[S.species].noiseLP, ctx.currentTime, 0.05);
   }
 
   // ---------- Motion ----------
@@ -427,6 +445,12 @@
   $('distRange').addEventListener('input', e => {
     S.radius = parseFloat(e.target.value);
     setText('distLabel', S.radius.toFixed(2) + ' m');
+  });
+
+  $('bwRange').addEventListener('input', e => {
+    S.bandwidthHz = parseFloat(e.target.value);
+    setText('bwLabel', (S.bandwidthHz / 1000).toFixed(1) + ' kHz');
+    if (bandwidth) bandwidth.frequency.setTargetAtTime(S.bandwidthHz, ctx.currentTime, 0.03);
   });
 
   $('axisSel').addEventListener('change', e => { S.axis = e.target.value; });

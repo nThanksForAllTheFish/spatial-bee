@@ -23,19 +23,30 @@ enum InsectSpecies: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Relative harmonic amplitudes, index 0 is the fundamental.
+    /// Relative harmonic amplitudes, index 0 is the fundamental. The series must reach
+    /// the pinna band (roughly 5 to 12 kHz) or the HRTF has nothing to shape there and
+    /// elevation collapses to left-right panning. Power-law rolloff keeps it bright
+    /// without sounding like a buzzer.
     var harmonics: [Double] {
         switch self {
-        case .bee:      return [1.0, 0.7, 0.55, 0.4, 0.3, 0.22, 0.15, 0.1, 0.07, 0.05]
-        case .mosquito: return [1.0, 0.5, 0.25, 0.12, 0.06]
+        case .bee:      return (1...40).map { pow(Double($0), -0.8) }
+        case .mosquito: return (1...16).map { pow(Double($0), -1.0) }
         }
     }
 
     /// Level of the breathy noise component relative to the tone.
     var noiseLevel: Double {
         switch self {
-        case .bee: return 0.12
-        case .mosquito: return 0.03
+        case .bee: return 0.18
+        case .mosquito: return 0.06
+        }
+    }
+
+    /// One-pole low-pass coefficient for the noise, as a cutoff in Hz.
+    var noiseCutoffHz: Double {
+        switch self {
+        case .bee: return 9_000
+        case .mosquito: return 10_000
         }
     }
 
@@ -113,7 +124,8 @@ final class InsectSynth {
         // which gives the continuous wobble of a real wingbeat.
         let retargetInterval = Int(sampleRate * 0.04)
         let smoothing = 1.0 - exp(-1.0 / (sampleRate * 0.02))   // ~20 ms time constant
-        let twoPi = 2.0 * Double.pi
+        let noiseCoefficient = 1.0 - exp(-twoPiConst * species.noiseCutoffHz / sampleRate)
+        let twoPi = twoPiConst
         let nyquistLimit = sampleRate * 0.42
 
         for i in 0..<frameCount {
@@ -144,12 +156,14 @@ final class InsectSynth {
 
             // Low-passed white noise adds the breathy buzz of the body and wings.
             let white = uniform() * 2.0 - 1.0
-            noiseLP += (white - noiseLP) * 0.15
+            noiseLP += (white - noiseLP) * noiseCoefficient
             sample += noiseLP * noiseLevel
 
             out[i] = Float(sample * flutter * gain)
         }
     }
+
+    private let twoPiConst = 2.0 * Double.pi
 
     // MARK: Cheap RNG (xorshift), safe for the audio thread
 
