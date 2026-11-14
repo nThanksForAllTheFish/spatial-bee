@@ -71,16 +71,16 @@ final class MotionTracker: ObservableObject {
 
     /// Rotate a device-frame vector into the world frame using the attitude matrix.
     ///
-    /// CMAttitude's rotation matrix maps device coordinates to reference-frame
-    /// coordinates (the same convention SceneKit uses when it sets a camera transform
-    /// straight from the attitude). If the insect ever moves opposite to the phone on
-    /// a real device, this is the one place to transpose.
+    /// CMAttitude's rotation matrix, read as m_row_col with column vectors, maps
+    /// reference-frame coordinates into device coordinates. The device-to-world rotation
+    /// is therefore its transpose, which is what is applied here. Verified on an iPhone
+    /// on 2026-11-14: the untransposed form mirrored azimuth.
     nonisolated static func rotateToWorld(_ v: SIMD3<Double>, attitude: CMAttitude) -> SIMD3<Double> {
         let m = attitude.rotationMatrix
         let world = SIMD3<Double>(
-            m.m11 * v.x + m.m12 * v.y + m.m13 * v.z,
-            m.m21 * v.x + m.m22 * v.y + m.m23 * v.z,
-            m.m31 * v.x + m.m32 * v.y + m.m33 * v.z
+            m.m11 * v.x + m.m21 * v.y + m.m31 * v.z,
+            m.m12 * v.x + m.m22 * v.y + m.m32 * v.z,
+            m.m13 * v.x + m.m23 * v.y + m.m33 * v.z
         )
         let length = simd_length(world)
         return length > 0 ? world / length : SIMD3(1, 0, 0)

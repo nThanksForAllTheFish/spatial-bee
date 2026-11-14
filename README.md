@@ -51,10 +51,8 @@ remote) and the back of the phone (hold it like a camera).
 
 ## Things to check on first device run
 
-- Direction sense. If the insect moves opposite to the phone, the attitude matrix is
-  being applied in the wrong direction. The one place to change is
-  `MotionTracker.rotateToWorld`, where the matrix would need transposing. The simulator
-  cannot exercise this, so it is unverified.
+- Direction sense. Verified on an iPhone 2026-11-14 after transposing the attitude
+  matrix in `MotionTracker.rotateToWorld`; the untransposed form mirrored azimuth.
 - Front-back confusion. With a generic HRTF and no head tracking, sources behind can
   read as in front. Moving the phone through the side resolves it; a static source
   behind the head is the hard case.

@@ -23,6 +23,10 @@ final class BeeController: ObservableObject {
     }
     /// Distance from the head center, meters.
     @Published var radius: Double = 0.6
+    /// Low-pass on the insect before spatialization, Hz.
+    @Published var bandwidthHz: Double = 16_000 {
+        didSet { audio.synth.cutoffHz = bandwidthHz }
+    }
     @Published var pointingAxis: PointingAxis = .topEdge {
         didSet { motion.axis = pointingAxis }
     }

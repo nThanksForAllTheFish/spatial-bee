@@ -36,6 +36,14 @@ struct ContentView: View {
                         Text("Distance \(controller.radius, specifier: "%.2f") m")
                         Slider(value: $controller.radius, in: 0.15...3.0)
                     }
+
+                    VStack(alignment: .leading) {
+                        Text("Bandwidth \(controller.bandwidthHz / 1000, specifier: "%.1f") kHz")
+                        Slider(value: $controller.bandwidthHz, in: 1_000...16_000, step: 100)
+                        Text("Up-down cues live above about 5 kHz. Lower this and elevation should collapse to left-right.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Control") {

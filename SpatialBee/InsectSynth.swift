@@ -74,6 +74,9 @@ final class InsectSynth {
     var dopplerRatio: Double = 1.0
     /// Output gain. Keep well under 1 so HRTF filtering has headroom.
     var gain: Double = 0.22
+    /// Low-pass cutoff on the whole insect before spatialization, Hz. The elevation
+    /// experiment: pull it below ~4 kHz and the pinna cues disappear.
+    var cutoffHz: Double = 16_000
 
     // MARK: State (audio thread only)
 
@@ -86,6 +89,12 @@ final class InsectSynth {
     private var samplesUntilRetarget = 0
     private var rng: UInt32 = 0x9E3779B9
     private var noiseLP: Double = 0
+
+    // Second-order Butterworth low-pass (RBJ cookbook), coefficients recomputed only
+    // when the cutoff changes. State in direct form I.
+    private var lpCutoff: Double = -1
+    private var b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0
+    private var x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0
 
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
@@ -127,6 +136,7 @@ final class InsectSynth {
         let noiseCoefficient = 1.0 - exp(-twoPiConst * species.noiseCutoffHz / sampleRate)
         let twoPi = twoPiConst
         let nyquistLimit = sampleRate * 0.42
+        updateLowPassIfNeeded(cutoff: min(self.cutoffHz, sampleRate * 0.45))
 
         for i in 0..<frameCount {
             if samplesUntilRetarget <= 0 {
@@ -159,8 +169,28 @@ final class InsectSynth {
             noiseLP += (white - noiseLP) * noiseCoefficient
             sample += noiseLP * noiseLevel
 
-            out[i] = Float(sample * flutter * gain)
+            // Bandwidth low-pass.
+            let x0 = sample
+            let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2 = x1; x1 = x0; y2 = y1; y1 = y0
+
+            out[i] = Float(y0 * flutter * gain)
         }
+    }
+
+    private func updateLowPassIfNeeded(cutoff: Double) {
+        guard cutoff != lpCutoff else { return }
+        lpCutoff = cutoff
+        let w0 = twoPiConst * cutoff / sampleRate
+        let cosw = cos(w0), sinw = sin(w0)
+        let q = 0.7071
+        let alpha = sinw / (2 * q)
+        let a0 = 1 + alpha
+        b0 = ((1 - cosw) / 2) / a0
+        b1 = (1 - cosw) / a0
+        b2 = b0
+        a1 = (-2 * cosw) / a0
+        a2 = (1 - alpha) / a0
     }
 
     private let twoPiConst = 2.0 * Double.pi
