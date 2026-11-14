@@ -145,6 +145,7 @@
     radialVel: 0,
     lastT: null,
     pointing: [1, 0, 0],   // world frame, unit
+    gravity: null, gravityOk: false, azimuthDir: null, lastFuseT: null,
     wanderTarget: 0, flutterTarget: 1, lastRetarget: 0,
   };
 
@@ -263,8 +264,63 @@
       m[2][0] * d[0] + m[2][1] * d[1] + m[2][2] * d[2],
     ];
     const n = Math.hypot(v[0], v[1], v[2]) || 1;
-    S.pointing = [v[0] / n, v[1] / n, v[2] / n];
-    if (!S.motionOk) { S.motionOk = true; setText('motionOut', 'Tracking'); }
+    fusePointing([v[0] / n, v[1] / n, v[2] / n], performance.now() / 1000);
+    if (!S.motionOk) { S.motionOk = true; setText('motionOut', S.gravityOk ? 'Tracking (gravity-aided)' : 'Tracking'); }
+  }
+
+  // Gravity in the device frame, from the motion event. No Euler decomposition, so it is
+  // well behaved at every attitude. The W3C sign convention reports the reaction to
+  // gravity: a phone lying flat, screen up, reads z = +9.81, so this vector points up.
+  function onMotion(e) {
+    const g = e.accelerationIncludingGravity;
+    if (!g || g.x == null) return;
+    const n = Math.hypot(g.x, g.y, g.z);
+    if (n < 1) return;
+    const up = [g.x / n, g.y / n, g.z / n];
+    // Short low-pass to ride out hand accelerations (~100 ms).
+    if (!S.gravity) S.gravity = up;
+    else for (let i = 0; i < 3; i++) S.gravity[i] += (up[i] - S.gravity[i]) * 0.3;
+    S.gravityOk = true;
+  }
+
+  // Combine the Euler-derived pointing vector with gravity-derived elevation.
+  //
+  // Elevation: sin(el) = axis · up, straight from gravity when available.
+  // Azimuth: horizontal projection of the Euler vector, smoothed with a time constant
+  // that grows as the pointing approaches vertical. At the zenith azimuth is undefined
+  // (any yaw jitter swings it through 360 degrees), so holding the last good value is
+  // the only sensible answer. cos(el)^2 weighting does that continuously.
+  function fusePointing(v, t) {
+    const dt = S.lastFuseT == null ? 1 / 60 : Math.min(0.1, Math.max(1e-3, t - S.lastFuseT));
+    S.lastFuseT = t;
+
+    let sinEl;
+    if (S.gravityOk) {
+      const d = S.axis === 'top' ? [0, 1, 0] : [0, 0, -1];
+      const g = S.gravity;
+      sinEl = d[0] * g[0] + d[1] * g[1] + d[2] * g[2];
+    } else {
+      sinEl = v[2];
+    }
+    sinEl = Math.max(-1, Math.min(1, sinEl));
+    const cosEl = Math.sqrt(1 - sinEl * sinEl);
+
+    // Horizontal direction from the Euler vector.
+    const hn = Math.hypot(v[0], v[1]);
+    if (hn > 1e-3) {
+      const h = [v[0] / hn, v[1] / hn];
+      const tau = 0.05 / Math.max(0.02, cosEl * cosEl);   // 50 ms level, seconds near vertical
+      const k = 1 - Math.exp(-dt / tau);
+      if (!S.azimuthDir) S.azimuthDir = h;
+      else {
+        S.azimuthDir[0] += (h[0] - S.azimuthDir[0]) * k;
+        S.azimuthDir[1] += (h[1] - S.azimuthDir[1]) * k;
+        const an = Math.hypot(S.azimuthDir[0], S.azimuthDir[1]) || 1;
+        S.azimuthDir[0] /= an; S.azimuthDir[1] /= an;
+      }
+    }
+    const a = S.azimuthDir || [1, 0];
+    S.pointing = [a[0] * cosEl, a[1] * cosEl, sinEl];
   }
 
   // iOS only grants motion access when requestPermission() is called synchronously
@@ -272,10 +328,16 @@
   // and passes the pending promise in.
   function requestMotionPermission() {
     const D = window.DeviceOrientationEvent;
+    const M = window.DeviceMotionEvent;
     if (!D) return Promise.resolve('unsupported');
     if (typeof D.requestPermission !== 'function') return Promise.resolve('granted');
     try {
-      return D.requestPermission();
+      // Both requests go out inside the same tap. iOS covers them with one prompt.
+      const p = D.requestPermission();
+      if (M && typeof M.requestPermission === 'function') {
+        M.requestPermission().catch(() => {});
+      }
+      return p;
     } catch (err) {
       return Promise.reject(err);
     }
@@ -296,13 +358,15 @@
       return;
     }
     window.addEventListener('deviceorientation', onOrientation);
+    window.addEventListener('devicemotion', onMotion);
     setText('motionOut', 'Waiting for data…');
     setTimeout(() => { if (!S.motionOk) setText('motionOut', 'No data (orbit only)'); }, 2000);
   }
 
   function stopMotion() {
     window.removeEventListener('deviceorientation', onOrientation);
-    S.motionOk = false;
+    window.removeEventListener('devicemotion', onMotion);
+    S.motionOk = false; S.gravityOk = false; S.gravity = null; S.azimuthDir = null; S.lastFuseT = null;
     setText('motionOut', 'Not started');
   }
 
