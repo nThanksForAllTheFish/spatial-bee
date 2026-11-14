@@ -249,17 +249,33 @@
     if (!S.motionOk) { S.motionOk = true; setText('motionOut', 'Tracking'); }
   }
 
-  async function startMotion() {
+  // iOS only grants motion access when requestPermission() is called synchronously
+  // inside the tap handler, before any await. So the click handler calls this first
+  // and passes the pending promise in.
+  function requestMotionPermission() {
     const D = window.DeviceOrientationEvent;
-    if (!D) { setText('motionOut', 'Not supported (orbit only)'); return; }
-    if (typeof D.requestPermission === 'function') {
-      try {
-        const r = await D.requestPermission();
-        if (r !== 'granted') { setText('motionOut', 'Permission denied (orbit only)'); return; }
-      } catch (err) {
-        setText('motionOut', 'Permission error (orbit only)');
-        return;
-      }
+    if (!D) return Promise.resolve('unsupported');
+    if (typeof D.requestPermission !== 'function') return Promise.resolve('granted');
+    try {
+      return D.requestPermission();
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  async function startMotion(permissionPromise) {
+    let r;
+    try {
+      r = await permissionPromise;
+    } catch (err) {
+      setText('motionOut', 'Permission error: ' + (err && err.name ? err.name : err) + ' (orbit only)');
+      return;
+    }
+    if (r === 'unsupported') { setText('motionOut', 'Not supported (orbit only)'); return; }
+    if (r !== 'granted') {
+      setText('motionOut', 'Permission ' + r + ' (orbit only)');
+      setText('noteOut', 'Motion access was refused. Reload the page and tap Start again, or check Settings, Safari, Motion & Orientation Access.');
+      return;
     }
     window.addEventListener('deviceorientation', onOrientation);
     setText('motionOut', 'Waiting for data…');
@@ -373,6 +389,7 @@
 
   $('startBtn').addEventListener('click', async () => {
     if (S.running) { stop(); return; }
+    const permissionPromise = requestMotionPermission();   // first, still inside the tap
     if (!ctx) buildAudio();
     await ctx.resume();
     master.gain.setTargetAtTime(1, ctx.currentTime, 0.05);
@@ -384,7 +401,7 @@
     setText('noteOut', ctx.state === 'running'
       ? 'If you hear nothing on an iPhone, flip the ring/silent switch to ring.'
       : 'Audio context is ' + ctx.state + '.');
-    await startMotion();   // must follow a user gesture on iOS
+    await startMotion(permissionPromise);
     if (!S.forwardYaw) setTimeout(recenter, 400);
     requestAnimationFrame(tick);
   });
