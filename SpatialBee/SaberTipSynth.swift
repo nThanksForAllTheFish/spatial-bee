@@ -1,23 +1,33 @@
 import AVFoundation
 
 /// The bright end of the saber. Sits a blade length out along the pointing direction
-/// while the low hum (an InsectSynth) sits at the hilt. Three parts:
+/// while the low hum (an InsectSynth) sits at the hilt. Built to sound electrical, not
+/// insect-like: no dense harmonic stack and no flutter in the wingbeat band. Four parts:
 ///
-/// - upper harmonics of the hum, so the tip and hilt read as one object;
-/// - a fizz: band-limited noise in the pinna band with a crackle modulation, which is
-///   what lets the ear place the tip in elevation and front-back;
-/// - a swing: mid-band noise whose level follows the blade's angular speed, with a
-///   pitch lift on the harmonics.
+/// - beating partials: three upper partials of the hum, each a detuned pair a few hertz
+///   apart, so the tip has the slow beat of the film saber instead of a buzz;
+/// - sizzle: band-limited noise in the pinna band with a slow, shallow random envelope;
+/// - ticks: sparse, sharp, high-passed noise bursts at a random (Poisson) rate, the
+///   small-arc crackle. These carry most of the elevation and front-back cue;
+/// - swing: mid-band noise whose level follows the blade's angular speed, with a pitch
+///   lift on the partials.
 ///
-/// Same threading rules as InsectSynth.
+/// Same threading rules as InsectSynth: no allocation in render, params read once per
+/// buffer.
 final class SaberTipSynth {
 
     struct Params {
         var humF0: Double = 92
         var humLevel: Double = 0.35
-        var fizzLevel: Double = 0.5
+        /// Beat rate of each detuned partial pair, Hz.
+        var beatHz: Double = 2.5
+        /// Sizzle (slow-modulated pinna-band noise) level.
+        var fizzLevel: Double = 0.35
         var fizzLowHz: Double = 3000
         var fizzCutoffHz: Double = 10_000
+        /// Tick (arc crackle) level and mean rate.
+        var tickLevel: Double = 0.6
+        var ticksPerSecond: Double = 25
         var swingLevel: Double = 0.6
         var gain: Double = 0.18
     }
@@ -27,29 +37,33 @@ final class SaberTipSynth {
     var swing: Double = 0
 
     private let sampleRate: Double
-    private var phase = 0.0
     private var rng: UInt32 = 0x7A3F19C5
     private var fizzLP = 0.0, fizzHP = 0.0
     private var swingLP = 0.0, swingHP = 0.0
-    private var crackle = 1.0, crackleTarget = 1.0
-    private var samplesUntilCrackle = 0
+    private var tickHP = 0.0
+    private var tickEnv = 0.0
+    private var samplesUntilTick = 0
+    private var sizzle = 1.0, sizzleTarget = 1.0
+    private var samplesUntilSizzle = 0
     private var swingSmooth = 0.0
     private let twoPi = 2.0 * Double.pi
 
-    // Harmonics 4 through 20 of the hum, falling off, normalized.
-    private static let harmonics: [Double] = {
-        let raw = (4...20).map { pow(Double($0), -1.1) }
+    // Partials of the hum: harmonic numbers and relative levels, normalized.
+    private static let partialHarmonics: [Double] = [3, 5, 8]
+    private static let partialLevels: [Double] = {
+        let raw = [0.5, 0.3, 0.2]
         let norm = raw.reduce(0, +)
         return raw.map { $0 / norm }
     }()
-    private let harmonicAmps = UnsafeMutablePointer<Double>.allocate(capacity: 17)
+    // Two phases per partial, the pair detuned by ±beatHz/2.
+    private let phases = UnsafeMutablePointer<Double>.allocate(capacity: 6)
 
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
-        for (i, a) in SaberTipSynth.harmonics.enumerated() { harmonicAmps[i] = a }
+        for i in 0..<6 { phases[i] = Double(i) * 0.7 }
     }
 
-    deinit { harmonicAmps.deallocate() }
+    deinit { phases.deallocate() }
 
     func makeSourceNode() -> AVAudioSourceNode {
         AVAudioSourceNode { [unowned self] _, _, frameCount, audioBufferList -> OSStatus in
@@ -69,41 +83,63 @@ final class SaberTipSynth {
         let smooth = 1 - exp(-1 / (sampleRate * 0.04))
         let fizzLPCoeff = 1 - exp(-twoPi * min(p.fizzCutoffHz, sampleRate * 0.45) / sampleRate)
         let fizzHPCoeff = 1 - exp(-twoPi * p.fizzLowHz / sampleRate)
-        let crackleInterval = Int(sampleRate * 0.012)   // ~80 Hz retarget, a sputtering texture
+        let tickHPCoeff = 1 - exp(-twoPi * 2500 / sampleRate)
+        let tickDecay = exp(-1 / (sampleRate * 0.0015))          // 1.5 ms bursts
+        let sizzleInterval = Int(sampleRate * 0.15)              // retarget ~7 Hz
+        let sizzleSmooth = 1 - exp(-1 / (sampleRate * 0.06))     // 60 ms glide, no flutter
+        let tickRate = max(p.ticksPerSecond, 0.01)
         let nyquistLimit = sampleRate * 0.42
+        let halfBeat = p.beatHz * 0.5
 
         for i in 0..<frameCount {
             swingSmooth += (swingTarget - swingSmooth) * smooth
 
-            // Hum harmonics with a pitch lift on the swing.
+            // Beating partials with a pitch lift on the swing.
             let f0 = p.humF0 * (1 + 0.18 * swingSmooth)
-            phase += twoPi * f0 / sampleRate
-            if phase > twoPi { phase -= twoPi }
-            var hum = 0.0
-            for (i, k) in (4...20).enumerated() {
-                if f0 * Double(k) > nyquistLimit { break }
-                hum += harmonicAmps[i] * sin(phase * Double(k))
+            var partials = 0.0
+            for k in 0..<3 {
+                let fc = f0 * SaberTipSynth.partialHarmonics[k]
+                if fc > nyquistLimit { continue }
+                let fa = fc - halfBeat, fb = fc + halfBeat
+                phases[2 * k] += twoPi * fa / sampleRate
+                phases[2 * k + 1] += twoPi * fb / sampleRate
+                if phases[2 * k] > twoPi { phases[2 * k] -= twoPi }
+                if phases[2 * k + 1] > twoPi { phases[2 * k + 1] -= twoPi }
+                partials += SaberTipSynth.partialLevels[k] * 0.5 * (sin(phases[2 * k]) + sin(phases[2 * k + 1]))
             }
 
-            // Fizz: pinna-band noise with crackle.
-            if samplesUntilCrackle <= 0 {
-                samplesUntilCrackle = crackleInterval
-                crackleTarget = 0.4 + 0.6 * uniform() * uniform()
+            // Sizzle: pinna-band noise under a slow, shallow envelope.
+            if samplesUntilSizzle <= 0 {
+                samplesUntilSizzle = sizzleInterval
+                sizzleTarget = 0.6 + 0.4 * uniform()
             }
-            samplesUntilCrackle -= 1
-            crackle += (crackleTarget - crackle) * 0.002
+            samplesUntilSizzle -= 1
+            sizzle += (sizzleTarget - sizzle) * sizzleSmooth
             let white = uniform() * 2 - 1
             fizzLP += (white - fizzLP) * fizzLPCoeff
             fizzHP += (fizzLP - fizzHP) * fizzHPCoeff
-            let fizz = (fizzLP - fizzHP) * crackle
+            let fizz = (fizzLP - fizzHP) * sizzle
+
+            // Ticks: Poisson-timed, exponentially decaying noise bursts, high-passed.
+            if samplesUntilTick <= 0 {
+                let u = max(uniform(), 1e-6)
+                samplesUntilTick = Int(-log(u) / tickRate * sampleRate)
+                tickEnv = 0.5 + 0.5 * uniform()
+            }
+            samplesUntilTick -= 1
+            tickEnv *= tickDecay
+            let burst = white * tickEnv
+            tickHP += (burst - tickHP) * tickHPCoeff
+            let tick = burst - tickHP
 
             // Swing: mid-band noise, level follows angular speed.
             swingLP += (white - swingLP) * 0.2
             swingHP += (swingLP - swingHP) * 0.015
             let swingNoise = (swingLP - swingHP) * swingSmooth
 
-            let s = hum * p.humLevel * (1 + 0.5 * swingSmooth)
+            let s = partials * p.humLevel * (1 + 0.5 * swingSmooth)
                   + fizz * p.fizzLevel
+                  + tick * p.tickLevel
                   + swingNoise * p.swingLevel
             out[i] = Float(s * p.gain)
         }

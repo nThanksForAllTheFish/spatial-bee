@@ -99,7 +99,8 @@ final class BeeController: ObservableObject {
     @Published var remoteGain: Double = 0.25 { didSet { if !applying { config.training.remoteGain = remoteGain; audio.tuning = config } } }
     @Published var saberHumGain: Double = 0.12 { didSet { if !applying { config.training.saberHumGain = saberHumGain; pushSaberParams() } } }
     @Published var saberTipGain: Double = 0.18 { didSet { if !applying { config.training.saberTipGain = saberTipGain; pushSaberParams() } } }
-    @Published var saberFizz: Double = 0.5 { didSet { if !applying { config.training.saberFizzLevel = saberFizz; audio.tuning = config } } }
+    @Published var saberFizz: Double = 0.35 { didSet { if !applying { config.training.saberFizzLevel = saberFizz; audio.tuning = config } } }
+    @Published var saberTicks: Double = 0.6 { didSet { if !applying { config.training.saberTickLevel = saberTicks; audio.tuning = config } } }
 
     // MARK: Readouts
 
@@ -186,6 +187,7 @@ final class BeeController: ObservableObject {
         saberHumGain = c.training.saberHumGain
         saberTipGain = c.training.saberTipGain
         saberFizz = c.training.saberFizzLevel
+        saberTicks = c.training.saberTickLevel
 
         applySpecies()
         pushSaberParams()

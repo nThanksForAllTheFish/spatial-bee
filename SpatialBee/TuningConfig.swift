@@ -47,7 +47,13 @@ struct TuningConfig: Codable, Equatable {
         /// Blade length; the tip source sits at saberRadius + saberLength.
         var saberLength: Double = 1.1
         var saberTipGain: Double = 0.18
-        var saberFizzLevel: Double = 0.5
+        /// Tip sizzle (slow-modulated pinna-band noise) level.
+        var saberFizzLevel: Double = 0.35
+        /// Tip arc-crackle ticks: level and mean rate per second.
+        var saberTickLevel: Double = 0.6
+        var saberTicksPerSecond: Double = 25
+        /// Beat rate of the tip's detuned partial pairs, Hz.
+        var saberBeatHz: Double = 2.5
         var saberSwingLevel: Double = 0.6
         /// Angular speed, degrees per second, that counts as a full swing.
         var saberSwingFullDegPerSec: Double = 300

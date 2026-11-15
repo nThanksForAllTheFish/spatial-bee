@@ -20,8 +20,10 @@ with a whoosh that follows its angular speed and a charge tone; a bolt from the 
 position; a saber clash at the saber's position on a block; a stun buzz close to the head
 on a hit. `Haptics.swift` adds a sharp tap for a block and a half-second rumble for a hit.
 The saber is two sources along the pointing direction: a low hilt hum close to the hand
-and a tip (`SaberTipSynth.swift`) a blade length out carrying the hum's upper harmonics,
-a crackling fizz in the pinna band, and a swing whoosh with a pitch lift that follows
+and a tip (`SaberTipSynth.swift`) a blade length out. The tip is deliberately not an
+additive buzz, which the ear hears as an insect: it is three detuned pairs of the hum's
+upper partials beating at a few hertz, a slow-modulated sizzle in the pinna band, sparse
+high-passed arc ticks at a random rate, and a swing whoosh with a pitch lift that follows
 the blade's angular speed. The clash plays at the tip. Blast shield blanks the screen; double-tap lifts it.
 
 Difficulty lives in `config.json` under `training`: remote speed, hover range, charge

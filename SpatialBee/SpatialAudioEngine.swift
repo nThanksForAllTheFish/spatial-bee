@@ -54,7 +54,7 @@ final class SpatialAudioEngine: ObservableObject {
     let remoteSynth: RemoteSynth
     /// Training mode saber hilt hum, an InsectSynth with a low fundamental.
     let saberSynth: InsectSynth
-    /// Training mode saber tip: fizz, upper harmonics, swing.
+    /// Training mode saber tip: beating partials, sizzle, arc ticks, swing.
     let tipSynth: SaberTipSynth
 
     private let engine = AVAudioEngine()
@@ -198,6 +198,9 @@ final class SpatialAudioEngine: ObservableObject {
         remoteSynth.setHarmonics(count: t.remoteHarmonicCount, rolloff: t.remoteHarmonicRolloff)
         var tp = tipSynth.params
         tp.fizzLevel = t.saberFizzLevel
+        tp.tickLevel = t.saberTickLevel
+        tp.ticksPerSecond = t.saberTicksPerSecond
+        tp.beatHz = t.saberBeatHz
         tp.swingLevel = t.saberSwingLevel
         tipSynth.params = tp   // gain is set by the controller with the mode
     }
