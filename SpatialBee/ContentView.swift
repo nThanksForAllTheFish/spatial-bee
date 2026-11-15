@@ -21,7 +21,9 @@ struct ContentView: View {
                     }
                     .disabled(!controller.isRunning || controller.autoOrbit)
                 } footer: {
-                    Text("Hold the phone pointing straight ahead of you and tap Re-center. The insect then goes wherever you point.")
+                    Text(controller.headTracking
+                         ? "Look straight ahead with the phone pointing the same way, then tap Re-center. The insect goes where you point and stays put when you turn your head. Re-center again if it drifts."
+                         : "Hold the phone pointing straight ahead of you and tap Re-center. The insect then goes wherever you point.")
                 }
 
                 Section("Insect") {
@@ -57,6 +59,12 @@ struct ContentView: View {
                         ForEach(PointingAxis.allCases) { axis in
                             Text(axis.label).tag(axis)
                         }
+                    }
+
+                    Toggle("Head tracking (AirPods)", isOn: $controller.headTracking)
+                        .disabled(!controller.head.isAvailable)
+                    if controller.headTracking {
+                        Toggle("Invert head rotation", isOn: $controller.invertHead)
                     }
 
                     Toggle("Auto-orbit", isOn: $controller.autoOrbit)
@@ -99,8 +107,13 @@ struct ContentView: View {
                     LabeledContent("Azimuth", value: String(format: "%+.0f°", controller.azimuthDegrees))
                     LabeledContent("Elevation", value: String(format: "%+.0f°", controller.elevationDegrees))
                     LabeledContent("Distance", value: String(format: "%.2f m", controller.distanceMeters))
+                    if controller.headTracking {
+                        LabeledContent("Head yaw", value: String(format: "%+.0f°", controller.headYawDegrees))
+                        LabeledContent("Head pitch", value: String(format: "%+.0f°", controller.headPitchDegrees))
+                    }
                     CompassView(azimuthDegrees: controller.azimuthDegrees,
-                                elevationDegrees: controller.elevationDegrees)
+                                elevationDegrees: controller.elevationDegrees,
+                                headYawDegrees: controller.headTracking ? controller.headYawDegrees : 0)
                         .frame(height: 140)
                         .frame(maxWidth: .infinity)
                 }
@@ -113,6 +126,9 @@ struct ContentView: View {
                             .foregroundStyle(.orange)
                     }
                     LabeledContent("Motion", value: controller.motion.isAvailable ? "Available" : "Not available (orbit only)")
+                    LabeledContent("Head", value: controller.head.sampleRateHz > 0
+                                   ? String(format: "%@ · %.0f Hz", controller.head.status, controller.head.sampleRateHz)
+                                   : controller.head.status)
                 }
             }
             .navigationTitle("Spatial Bee")
@@ -148,9 +164,12 @@ struct ContentView: View {
 }
 
 /// Top-down view of the head with a dot where the insect is. Dot size grows with elevation.
+/// The nose marker turns with head yaw when head tracking is on; the ring and the dot stay
+/// in the aligned frame, which is the point of head tracking.
 struct CompassView: View {
     let azimuthDegrees: Double
     let elevationDegrees: Double
+    var headYawDegrees: Double = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -160,18 +179,27 @@ struct CompassView: View {
             let theta = azimuthDegrees * .pi / 180
             let dot = CGPoint(x: center.x + ring * sin(theta), y: center.y - ring * cos(theta))
             let dotSize = 10 + 8 * max(0, elevationDegrees / 90)
+            let nose = headYawDegrees * .pi / 180
+            let noseInner = CGPoint(x: center.x + (size * 0.11) * sin(nose), y: center.y - (size * 0.11) * cos(nose))
+            let noseOuter = CGPoint(x: center.x + (size * 0.11 + 10) * sin(nose), y: center.y - (size * 0.11 + 10) * cos(nose))
 
             ZStack {
                 Circle()
                     .stroke(.secondary.opacity(0.4), lineWidth: 1)
                     .frame(width: ring * 2, height: ring * 2)
                     .position(center)
-                // Nose marker: straight ahead is up.
+                // Aligned "straight ahead" tick on the ring.
                 Path { p in
                     p.move(to: CGPoint(x: center.x, y: center.y - ring))
                     p.addLine(to: CGPoint(x: center.x, y: center.y - ring - 8))
                 }
                 .stroke(.secondary, lineWidth: 2)
+                // Nose: where the head is facing.
+                Path { p in
+                    p.move(to: noseInner)
+                    p.addLine(to: noseOuter)
+                }
+                .stroke(Color.accentColor, lineWidth: 3)
                 Circle()
                     .fill(.secondary.opacity(0.25))
                     .frame(width: size * 0.22, height: size * 0.22)

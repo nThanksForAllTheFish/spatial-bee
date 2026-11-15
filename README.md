@@ -70,11 +70,19 @@ remote) and the back of the phone (hold it like a camera).
   ear. Slow sweeps feel fine, fast flicks lag. Wired headphones remove this for testing.
 - Level. Gain is set conservatively in `InsectSynth.gain`. Raise if quiet.
 
+## Head tracking
+
+`SpatialBee/HeadTracker.swift` reads AirPods attitude through `CMHeadphoneMotionManager`.
+Because the earbuds' reference yaw is arbitrary and drifts, the app never uses absolute
+head orientation. Re-center snapshots the head attitude at the same instant it captures
+the phone's forward direction; afterwards only the rotation since that snapshot drives
+`listenerVectorOrientation`, while the insect's position stays in the aligned frame. The
+result is a source that holds still in the room when the head turns, which is the cue
+that resolves front-back confusion. Toggle it in Control; the Status section shows the
+sample rate. The Invert toggle exists for the first device run in case the frame
+convention is the other way round; remove it once settled.
+
 ## Next steps
 
-- Head tracking with `CMHeadphoneMotionManager` on AirPods Pro: feed the earbud attitude
-  into `environment.listenerVectorOrientation` so the insect stays fixed in the room
-  when you turn your head. Needs the yaw-alignment step described earlier, since the
-  earbuds have no magnetometer.
 - Replace the synthesizer with recorded samples if realism matters more than control.
 - Try `PHASE` instead of the environment node if occlusion or multiple sources come up.

@@ -16,6 +16,7 @@ final class BeeController: ObservableObject {
 
     let audio = SpatialAudioEngine()
     let motion = MotionTracker()
+    let head = HeadTracker()
 
     // MARK: User settings
 
@@ -39,6 +40,23 @@ final class BeeController: ObservableObject {
     @Published var autoOrbit = false
     /// Revolutions per second for auto-orbit. Positive is counterclockwise seen from above.
     @Published var orbitRate: Double = 0.15
+    /// Drive the listener orientation from AirPods head motion so the insect stays put
+    /// in the room when the head turns.
+    @Published var headTracking = false {
+        didSet {
+            if headTracking {
+                head.start()
+            } else {
+                head.stop()
+                audio.resetListenerOrientation()
+                headYawDegrees = 0
+                headPitchDegrees = 0
+            }
+        }
+    }
+    /// First-run insurance: flips the sense of head rotation if the frame convention
+    /// turns out to be the other way round.
+    @Published var invertHead = false
 
     // MARK: Tuning (mirrors of the config, editable live)
 
@@ -60,6 +78,9 @@ final class BeeController: ObservableObject {
     @Published private(set) var azimuthDegrees: Double = 0
     @Published private(set) var elevationDegrees: Double = 0
     @Published private(set) var distanceMeters: Double = 0
+    /// Head yaw since Re-center, positive turning right.
+    @Published private(set) var headYawDegrees: Double = 0
+    @Published private(set) var headPitchDegrees: Double = 0
 
     // MARK: Internals
 
@@ -160,6 +181,7 @@ final class BeeController: ObservableObject {
         audio.renderer = renderer
         motion.axis = pointingAxis
         audio.start()
+        if headTracking { head.start() }
         audio.tuning = config   // nodes exist now; re-apply reverb blend on the source
         motion.start()
         if !hasCenteredOnce {
@@ -176,15 +198,19 @@ final class BeeController: ObservableObject {
         displayLink?.invalidate()
         displayLink = nil
         motion.stop()
+        if headTracking { head.stop() }
         audio.stop()
         isRunning = false
     }
 
-    /// Make "straight ahead" the direction the phone is pointing right now.
+    /// Make "straight ahead" the direction the phone is pointing right now, and, with
+    /// head tracking on, the direction the head is facing right now. Do both at once:
+    /// look at the phone while pointing it forward.
     func recenter() {
         let p = motion.pointing
         forwardYaw = atan2(p.y, p.x)
         hasCenteredOnce = true
+        head.align()
     }
 
     // MARK: Per-frame update
@@ -255,6 +281,18 @@ final class BeeController: ObservableObject {
 
         // 4. Push to the engine and the readouts.
         audio.setSourcePosition(AVAudio3DPoint(x: Float(position.x), y: Float(position.y), z: Float(position.z)))
+
+        // 5. Listener orientation from the head, relative to the Re-center pose. The source
+        // stays in the aligned frame, so turning the head leaves the insect where it is.
+        if headTracking, head.hasSample {
+            var rel = head.relativeRotation
+            if invertHead { rel = rel.transpose }
+            let forward = simd_normalize(rel * SIMD3(0, 0, -1))
+            let up = simd_normalize(rel * SIMD3(0, 1, 0))
+            audio.setListenerOrientation(forward: forward, up: up)
+            headYawDegrees = atan2(forward.x, -forward.z) * 180 / .pi
+            headPitchDegrees = asin(max(-1, min(1, forward.y))) * 180 / .pi
+        }
 
         let horizontal = sqrt(position.x * position.x + position.z * position.z)
         azimuthDegrees = atan2(position.x, -position.z) * 180 / .pi

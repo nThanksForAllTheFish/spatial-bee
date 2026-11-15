@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import simd
 
 /// Which binaural renderer the environment node uses. All three are Apple's; they differ
 /// in HRTF data set and processing, so elevation cues differ audibly between them.
@@ -93,6 +94,19 @@ final class SpatialAudioEngine: ObservableObject {
     /// Place the insect. Coordinates are meters in the listener frame described above.
     func setSourcePosition(_ p: AVAudio3DPoint) {
         source?.position = p
+    }
+
+    /// Turn the listener. Vectors are in the same frame as source positions; identity
+    /// is forward (0, 0, -1), up (0, 1, 0). Head tracking drives this.
+    func setListenerOrientation(forward: SIMD3<Double>, up: SIMD3<Double>) {
+        environment.listenerVectorOrientation = AVAudio3DVectorOrientation(
+            forward: AVAudio3DVector(x: Float(forward.x), y: Float(forward.y), z: Float(forward.z)),
+            up: AVAudio3DVector(x: Float(up.x), y: Float(up.y), z: Float(up.z))
+        )
+    }
+
+    func resetListenerOrientation() {
+        setListenerOrientation(forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))
     }
 
     var renderer: SpatialRenderer = .hrtfHQ {
