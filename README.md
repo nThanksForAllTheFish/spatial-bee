@@ -19,8 +19,10 @@ Sounds are synthesized (`RemoteSynth.swift`, `OneShots`): the remote's flutterin
 with a whoosh that follows its angular speed and a charge tone; a bolt from the remote's
 position; a saber clash at the saber's position on a block; a stun buzz close to the head
 on a hit. `Haptics.swift` adds a sharp tap for a block and a half-second rumble for a hit.
-An optional saber hum is spatialized along the pointing direction so you can hear where
-the blade is with your eyes shut. Blast shield blanks the screen; double-tap lifts it.
+The saber is two sources along the pointing direction: a low hilt hum close to the hand
+and a tip (`SaberTipSynth.swift`) a blade length out carrying the hum's upper harmonics,
+a crackling fizz in the pinna band, and a swing whoosh with a pitch lift that follows
+the blade's angular speed. The clash plays at the tip. Blast shield blanks the screen; double-tap lifts it.
 
 Difficulty lives in `config.json` under `training`: remote speed, hover range, charge
 warning, block cone, bolts per round, elevation band. The Tuning section exposes charge

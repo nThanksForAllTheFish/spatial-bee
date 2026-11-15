@@ -97,6 +97,9 @@ final class BeeController: ObservableObject {
     @Published var remoteHiss: Double = 0.14 { didSet { if !applying { config.training.remoteHissLevel = remoteHiss; audio.tuning = config } } }
     @Published var remoteRolloff: Double = 0.9 { didSet { if !applying { config.training.remoteHarmonicRolloff = remoteRolloff; audio.tuning = config } } }
     @Published var remoteGain: Double = 0.25 { didSet { if !applying { config.training.remoteGain = remoteGain; audio.tuning = config } } }
+    @Published var saberHumGain: Double = 0.12 { didSet { if !applying { config.training.saberHumGain = saberHumGain; pushSaberParams() } } }
+    @Published var saberTipGain: Double = 0.18 { didSet { if !applying { config.training.saberTipGain = saberTipGain; pushSaberParams() } } }
+    @Published var saberFizz: Double = 0.5 { didSet { if !applying { config.training.saberFizzLevel = saberFizz; audio.tuning = config } } }
 
     // MARK: Readouts
 
@@ -180,6 +183,9 @@ final class BeeController: ObservableObject {
         remoteHiss = c.training.remoteHissLevel
         remoteRolloff = c.training.remoteHarmonicRolloff
         remoteGain = c.training.remoteGain
+        saberHumGain = c.training.saberHumGain
+        saberTipGain = c.training.saberTipGain
+        saberFizz = c.training.saberFizzLevel
 
         applySpecies()
         pushSaberParams()
@@ -219,9 +225,13 @@ final class BeeController: ObservableObject {
     }
 
     private func pushSaberParams() {
+        let on = mode == .training && saberHum
         var p = audio.saberSynth.params
-        p.gain = (mode == .training && saberHum) ? config.training.saberHumGain : 0
+        p.gain = on ? config.training.saberHumGain : 0
         audio.saberSynth.params = p
+        var t = audio.tipSynth.params
+        t.gain = on ? config.training.saberTipGain : 0
+        audio.tipSynth.params = t
     }
 
     // MARK: Control
@@ -284,11 +294,12 @@ final class BeeController: ObservableObject {
         case .fire(let blocked):
             let remotePosition = game.remoteDirection * config.training.remoteRadius
             audio.playBolt(at: remotePosition)
-            let saberPosition = lastSaberDirection * config.training.saberRadius
+            // Contact happens at the blade, so the clash plays at the tip.
+            let tipPosition = lastSaberDirection * (config.training.saberRadius + config.training.saberLength)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
                 guard let self else { return }
                 if blocked {
-                    self.audio.playClash(at: saberPosition)
+                    self.audio.playClash(at: tipPosition)
                     self.haptics.block()
                 } else {
                     self.audio.playStun(at: SIMD3(0, -0.1, -0.15))
@@ -299,6 +310,7 @@ final class BeeController: ObservableObject {
     }
 
     private var lastSaberDirection = SIMD3<Double>(0, 0, -1)
+    private var swingLevel = 0.0
 
     // MARK: Per-frame update
 
@@ -386,12 +398,23 @@ final class BeeController: ObservableObject {
     }
 
     private func tickTraining(direction: SIMD3<Double>, dt: Double) {
+        // Blade angular speed drives the swing: noise burst at the tip and a pitch lift
+        // on both ends. Normalized to the configured full-swing speed, smoothed.
+        let stepDeg = acos(max(-1, min(1, simd_dot(lastSaberDirection, direction)))) * 180 / .pi
+        let speed = stepDeg / max(dt, 1e-3)
+        let swingTarget = min(1, speed / max(config.training.saberSwingFullDegPerSec, 1))
+        swingLevel += (swingTarget - swingLevel) * min(1, dt * 10)
         lastSaberDirection = direction
+
         game.update(dt: dt, saberDirection: direction)
 
-        let remotePosition = game.remoteDirection * config.training.remoteRadius
+        let t = config.training
+        let remotePosition = game.remoteDirection * t.remoteRadius
         audio.setRemotePosition(remotePosition)
-        audio.setSaberPosition(direction * config.training.saberRadius)
+        audio.setSaberPosition(direction * t.saberRadius)
+        audio.setSaberTipPosition(direction * (t.saberRadius + t.saberLength))
+        audio.tipSynth.swing = swingLevel
+        audio.saberSynth.dopplerRatio = 1 + 0.12 * swingLevel
         audio.remoteSynth.motion = game.motionLevel
         audio.remoteSynth.charge = game.chargeLevel
 

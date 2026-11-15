@@ -205,6 +205,9 @@ struct ContentView: View {
                 tuningSlider("Remote gain", value: $controller.remoteGain, range: 0.05...0.6, format: "%.2f")
                 tuningSlider("Remote hiss", value: $controller.remoteHiss, range: 0...0.5, format: "%.2f")
                 tuningSlider("Remote rolloff", value: $controller.remoteRolloff, range: 0.3...2.0, format: "%.2f")
+                tuningSlider("Saber hilt hum", value: $controller.saberHumGain, range: 0...0.4, format: "%.2f")
+                tuningSlider("Saber tip", value: $controller.saberTipGain, range: 0...0.5, format: "%.2f")
+                tuningSlider("Saber fizz", value: $controller.saberFizz, range: 0...1.0, format: "%.2f")
             } else {
                 tuningSlider("Gain", value: $controller.gain, range: 0.05...0.6, format: "%.2f")
                 tuningSlider("High-shelf gain", value: $controller.shelfGainDb, range: -12...12, format: "%+.0f dB", step: 1)

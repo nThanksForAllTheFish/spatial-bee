@@ -52,14 +52,17 @@ final class SpatialAudioEngine: ObservableObject {
     let synth: InsectSynth
     /// Training mode remote.
     let remoteSynth: RemoteSynth
-    /// Training mode saber hum, an InsectSynth with a low fundamental.
+    /// Training mode saber hilt hum, an InsectSynth with a low fundamental.
     let saberSynth: InsectSynth
+    /// Training mode saber tip: fizz, upper harmonics, swing.
+    let tipSynth: SaberTipSynth
 
     private let engine = AVAudioEngine()
     private let environment = AVAudioEnvironmentNode()
     private var insectSource: AVAudioSourceNode?
     private var remoteSource: AVAudioSourceNode?
     private var saberSource: AVAudioSourceNode?
+    private var tipSource: AVAudioSourceNode?
     private let boltPlayer = AVAudioPlayerNode()
     private let clashPlayer = AVAudioPlayerNode()
     private let stunPlayer = AVAudioPlayerNode()
@@ -70,7 +73,7 @@ final class SpatialAudioEngine: ObservableObject {
     private var routeObserver: NSObjectProtocol?
 
     private var spatialNodes: [AVAudioNode] {
-        [insectSource, remoteSource, saberSource].compactMap { $0 } + [boltPlayer, clashPlayer, stunPlayer]
+        [insectSource, remoteSource, saberSource, tipSource].compactMap { $0 } + [boltPlayer, clashPlayer, stunPlayer]
     }
 
     init() {
@@ -80,6 +83,7 @@ final class SpatialAudioEngine: ObservableObject {
         synth = InsectSynth(sampleRate: rate)
         remoteSynth = RemoteSynth(sampleRate: rate)
         saberSynth = InsectSynth(sampleRate: rate)
+        tipSynth = SaberTipSynth(sampleRate: rate)
         saberSynth.setHarmonics(count: 12, rolloff: 1.3)
         var sp = saberSynth.params
         sp.f0 = 92
@@ -127,6 +131,7 @@ final class SpatialAudioEngine: ObservableObject {
     func setInsectPosition(_ p: SIMD3<Double>) { insectSource?.position = point(p) }
     func setRemotePosition(_ p: SIMD3<Double>) { remoteSource?.position = point(p) }
     func setSaberPosition(_ p: SIMD3<Double>) { saberSource?.position = point(p) }
+    func setSaberTipPosition(_ p: SIMD3<Double>) { tipSource?.position = point(p) }
 
     /// Turn the listener. Identity is forward (0, 0, -1), up (0, 1, 0).
     func setListenerOrientation(forward: SIMD3<Double>, up: SIMD3<Double>) {
@@ -191,6 +196,10 @@ final class SpatialAudioEngine: ObservableObject {
         rp.hissCutoffHz = t.remoteHissCutoffHz
         remoteSynth.params = rp
         remoteSynth.setHarmonics(count: t.remoteHarmonicCount, rolloff: t.remoteHarmonicRolloff)
+        var tp = tipSynth.params
+        tp.fizzLevel = t.saberFizzLevel
+        tp.swingLevel = t.saberSwingLevel
+        tipSynth.params = tp   // gain is set by the controller with the mode
     }
 
     // MARK: Graph
@@ -201,9 +210,11 @@ final class SpatialAudioEngine: ObservableObject {
         let insect = synth.makeSourceNode()
         let remote = remoteSynth.makeSourceNode()
         let saber = saberSynth.makeSourceNode()
+        let tip = tipSynth.makeSourceNode()
         insectSource = insect
         remoteSource = remote
         saberSource = saber
+        tipSource = tip
 
         let hardwareRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
         let mono = AVAudioFormat(standardFormatWithSampleRate: hardwareRate, channels: 1)!
@@ -214,7 +225,7 @@ final class SpatialAudioEngine: ObservableObject {
         stunBuffer = OneShots.stun(sampleRate: hardwareRate)
 
         engine.attach(environment)
-        for node in [insect, remote, saber] as [AVAudioNode] + [boltPlayer, clashPlayer, stunPlayer] {
+        for node in [insect, remote, saber, tip] as [AVAudioNode] + [boltPlayer, clashPlayer, stunPlayer] {
             engine.attach(node)
             engine.connect(node, to: environment, format: mono)
         }

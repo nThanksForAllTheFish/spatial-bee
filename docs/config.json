@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "note": "Fetched by the native app and the web page at start and on Reload. Edit, push, tap Reload.",
   "renderer": "hrtf",
   "gain": 0.22,
@@ -15,7 +15,8 @@
     "elevationMinDeg": -25, "elevationMaxDeg": 60, "resolveSeconds": 0.8,
     "remoteGain": 0.25, "remoteF0": 520, "remoteHarmonicCount": 24, "remoteHarmonicRolloff": 0.9,
     "remoteHissLevel": 0.14, "remoteHissLowHz": 2500, "remoteHissCutoffHz": 11000,
-    "saberHumGain": 0.12, "saberRadius": 0.5
+    "saberHumGain": 0.12, "saberRadius": 0.35, "saberLength": 1.1,
+    "saberTipGain": 0.18, "saberFizzLevel": 0.5, "saberSwingLevel": 0.6, "saberSwingFullDegPerSec": 300
   },
   "species": {
     "bee":      { "f0": 230, "harmonicCount": 40, "harmonicRolloff": 0.8, "noiseLevel": 0.18, "noiseCutoffHz": 9000,  "pitchWander": 0.05 },

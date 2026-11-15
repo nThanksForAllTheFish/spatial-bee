@@ -40,9 +40,17 @@ struct TuningConfig: Codable, Equatable {
         var remoteHissLevel: Double = 0.14
         var remoteHissLowHz: Double = 2500
         var remoteHissCutoffHz: Double = 11_000
+        /// Hilt hum level.
         var saberHumGain: Double = 0.12
-        /// Saber hum sits this far from the head along the pointing direction.
-        var saberRadius: Double = 0.5
+        /// Hilt sits this far from the head along the pointing direction.
+        var saberRadius: Double = 0.35
+        /// Blade length; the tip source sits at saberRadius + saberLength.
+        var saberLength: Double = 1.1
+        var saberTipGain: Double = 0.18
+        var saberFizzLevel: Double = 0.5
+        var saberSwingLevel: Double = 0.6
+        /// Angular speed, degrees per second, that counts as a full swing.
+        var saberSwingFullDegPerSec: Double = 300
     }
 
     struct Species: Codable, Equatable {
