@@ -94,6 +94,9 @@ final class BeeController: ObservableObject {
     @Published var chargeSeconds: Double = 0.9 { didSet { if !applying { config.training.chargeSeconds = chargeSeconds; game.params = config.training } } }
     @Published var blockConeDeg: Double = 25 { didSet { if !applying { config.training.blockConeDeg = blockConeDeg; game.params = config.training } } }
     @Published var remoteSpeed: Double = 150 { didSet { if !applying { config.training.remoteSpeedDegPerSec = remoteSpeed; game.params = config.training } } }
+    @Published var remoteHiss: Double = 0.14 { didSet { if !applying { config.training.remoteHissLevel = remoteHiss; audio.tuning = config } } }
+    @Published var remoteRolloff: Double = 0.9 { didSet { if !applying { config.training.remoteHarmonicRolloff = remoteRolloff; audio.tuning = config } } }
+    @Published var remoteGain: Double = 0.25 { didSet { if !applying { config.training.remoteGain = remoteGain; audio.tuning = config } } }
 
     // MARK: Readouts
 
@@ -174,6 +177,9 @@ final class BeeController: ObservableObject {
         chargeSeconds = c.training.chargeSeconds
         blockConeDeg = c.training.blockConeDeg
         remoteSpeed = c.training.remoteSpeedDegPerSec
+        remoteHiss = c.training.remoteHissLevel
+        remoteRolloff = c.training.remoteHarmonicRolloff
+        remoteGain = c.training.remoteGain
 
         applySpecies()
         pushSaberParams()

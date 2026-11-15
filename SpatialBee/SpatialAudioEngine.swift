@@ -182,9 +182,15 @@ final class SpatialAudioEngine: ObservableObject {
         for node in spatialNodes {
             (node as? AVAudioMixing)?.reverbBlend = Float(tuning.reverbBlend)
         }
+        let t = tuning.training
         var rp = remoteSynth.params
-        rp.gain = tuning.training.remoteGain
+        rp.gain = t.remoteGain
+        rp.f0 = t.remoteF0
+        rp.hissLevel = t.remoteHissLevel
+        rp.hissLowHz = t.remoteHissLowHz
+        rp.hissCutoffHz = t.remoteHissCutoffHz
         remoteSynth.params = rp
+        remoteSynth.setHarmonics(count: t.remoteHarmonicCount, rolloff: t.remoteHarmonicRolloff)
     }
 
     // MARK: Graph

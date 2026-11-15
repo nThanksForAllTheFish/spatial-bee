@@ -1,14 +1,20 @@
 import AVFoundation
 
-/// The training remote's voice: a hovering whine with a fluttering tremolo, a whoosh of
-/// band-passed noise when it darts, and a rising charge tone before it fires. Mono,
-/// rendered in an AVAudioSourceNode. Same threading rules as InsectSynth.
+/// The training remote's voice: a harmonic whine with a fluttering tremolo, a constant
+/// high-frequency hiss so the pinna has something to work with, a whoosh of mid-band
+/// noise when it darts, and a rising charge tone before it fires. Mono, rendered in an
+/// AVAudioSourceNode. Same threading rules as InsectSynth.
 final class RemoteSynth {
 
     struct Params {
         var f0: Double = 520
         var tremoloHz: Double = 13
         var tremoloDepth: Double = 0.5
+        /// Constant hiss level, relative to the tone.
+        var hissLevel: Double = 0.14
+        /// Hiss band: one-pole high-pass at this frequency, low-pass at `hissCutoffHz`.
+        var hissLowHz: Double = 2500
+        var hissCutoffHz: Double = 11_000
         var gain: Double = 0.25
     }
 
@@ -18,14 +24,37 @@ final class RemoteSynth {
     /// 0 idle, 1 at the moment of fire. Main thread writes.
     var charge: Double = 0
 
+    static let maxHarmonics = 48
+    private let harmonicAmps = UnsafeMutablePointer<Double>.allocate(capacity: RemoteSynth.maxHarmonics)
+    private var harmonicCount = 0
+
+    /// Harmonic k (1-based) at k^-rolloff, normalized. Main thread only.
+    func setHarmonics(count: Int, rolloff: Double) {
+        let n = max(1, min(count, RemoteSynth.maxHarmonics))
+        var norm = 0.0
+        for k in 0..<n {
+            let a = pow(Double(k + 1), -rolloff)
+            harmonicAmps[k] = a
+            norm += a
+        }
+        for k in 0..<n { harmonicAmps[k] /= max(norm, 1e-9) }
+        harmonicCount = n
+    }
+
     private let sampleRate: Double
-    private var phase1 = 0.0, phase2 = 0.0, phaseT = 0.0, phaseV = 0.0, phaseC = 0.0
+    private var phase = 0.0, phaseT = 0.0, phaseV = 0.0, phaseC = 0.0
     private var rng: UInt32 = 0x1234ABCD
-    private var hp = 0.0, lp = 0.0
+    private var whooshLP = 0.0, whooshHP = 0.0
+    private var hissLP = 0.0, hissHP = 0.0
     private var motionSmooth = 0.0, chargeSmooth = 0.0
     private let twoPi = 2.0 * Double.pi
 
-    init(sampleRate: Double) { self.sampleRate = sampleRate }
+    init(sampleRate: Double) {
+        self.sampleRate = sampleRate
+        setHarmonics(count: 24, rolloff: 0.9)
+    }
+
+    deinit { harmonicAmps.deallocate() }
 
     func makeSourceNode() -> AVAudioSourceNode {
         AVAudioSourceNode { [unowned self] _, _, frameCount, audioBufferList -> OSStatus in
@@ -41,9 +70,13 @@ final class RemoteSynth {
 
     private func render(into out: UnsafeMutablePointer<Float>, frameCount: Int) {
         let p = params
+        let count = harmonicCount
         let motionTarget = motion
         let chargeTarget = charge
         let smooth = 1 - exp(-1 / (sampleRate * 0.03))
+        let nyquistLimit = sampleRate * 0.42
+        let hissLPCoeff = 1 - exp(-twoPi * min(p.hissCutoffHz, sampleRate * 0.45) / sampleRate)
+        let hissHPCoeff = 1 - exp(-twoPi * p.hissLowHz / sampleRate)
 
         for i in 0..<frameCount {
             motionSmooth += (motionTarget - motionSmooth) * smooth
@@ -53,30 +86,40 @@ final class RemoteSynth {
             phaseV += twoPi * 0.9 / sampleRate
             let vibrato = 1 + 0.012 * sin(phaseV)
             let f = p.f0 * vibrato * (1 + 0.35 * motionSmooth)
-
-            phase1 += twoPi * f / sampleRate
-            phase2 += twoPi * f * 1.5 / sampleRate   // a fifth above, thinner
-            if phase1 > twoPi { phase1 -= twoPi }
-            if phase2 > twoPi { phase2 -= twoPi }
+            phase += twoPi * f / sampleRate
+            if phase > twoPi { phase -= twoPi }
 
             phaseT += twoPi * p.tremoloHz / sampleRate
             if phaseT > twoPi { phaseT -= twoPi }
             let tremolo = 1 - p.tremoloDepth * (0.5 + 0.5 * sin(phaseT))
 
-            var s = (sin(phase1) + 0.45 * sin(phase2) + 0.25 * sin(2 * phase1)) / 1.7 * tremolo
+            // Harmonic series up into the pinna band.
+            var tone = 0.0
+            for k in 0..<count {
+                if f * Double(k + 1) > nyquistLimit { break }
+                tone += harmonicAmps[k] * sin(phase * Double(k + 1))
+            }
+            var s = tone * tremolo
 
-            // Whoosh: band-passed noise, level follows motion.
+            // Constant hiss: white noise, high-passed then low-passed, lightly tremolo'd
+            // so it reads as part of the same object.
             let white = uniform() * 2 - 1
-            lp += (white - lp) * 0.25
-            hp += (lp - hp) * 0.02
-            s += (lp - hp) * 0.9 * motionSmooth
+            hissLP += (white - hissLP) * hissLPCoeff
+            hissHP += (hissLP - hissHP) * hissHPCoeff
+            s += (hissLP - hissHP) * p.hissLevel * (0.7 + 0.3 * tremolo)
 
-            // Charge: rising tone 500 -> 2200 Hz, level rising with it.
+            // Whoosh: mid-band noise, level follows motion.
+            whooshLP += (white - whooshLP) * 0.25
+            whooshHP += (whooshLP - whooshHP) * 0.02
+            s += (whooshLP - whooshHP) * 0.9 * motionSmooth
+
+            // Charge: rising tone 500 -> 2200 Hz with two harmonics, level rising with it.
             if chargeSmooth > 0.001 {
                 let fc = 500 + 1700 * chargeSmooth * chargeSmooth
                 phaseC += twoPi * fc / sampleRate
                 if phaseC > twoPi { phaseC -= twoPi }
-                s += 0.7 * chargeSmooth * sin(phaseC) * (0.6 + 0.4 * sin(phaseT * 2))
+                let chargeTone = sin(phaseC) + 0.5 * sin(2 * phaseC) + 0.3 * sin(3 * phaseC)
+                s += 0.5 * chargeSmooth * chargeTone * (0.6 + 0.4 * sin(phaseT * 2))
             } else {
                 phaseC = 0
             }

@@ -34,6 +34,12 @@ struct TuningConfig: Codable, Equatable {
         var elevationMaxDeg: Double = 60
         var resolveSeconds: Double = 0.8
         var remoteGain: Double = 0.25
+        var remoteF0: Double = 520
+        var remoteHarmonicCount: Int = 24
+        var remoteHarmonicRolloff: Double = 0.9
+        var remoteHissLevel: Double = 0.14
+        var remoteHissLowHz: Double = 2500
+        var remoteHissCutoffHz: Double = 11_000
         var saberHumGain: Double = 0.12
         /// Saber hum sits this far from the head along the pointing direction.
         var saberRadius: Double = 0.5

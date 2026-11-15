@@ -202,6 +202,9 @@ struct ContentView: View {
                 tuningSlider("Charge warning", value: $controller.chargeSeconds, range: 0.3...2.5, format: "%.2f s", step: 0.05)
                 tuningSlider("Block cone", value: $controller.blockConeDeg, range: 5...60, format: "%.0f°", step: 1)
                 tuningSlider("Remote speed", value: $controller.remoteSpeed, range: 30...400, format: "%.0f °/s", step: 10)
+                tuningSlider("Remote gain", value: $controller.remoteGain, range: 0.05...0.6, format: "%.2f")
+                tuningSlider("Remote hiss", value: $controller.remoteHiss, range: 0...0.5, format: "%.2f")
+                tuningSlider("Remote rolloff", value: $controller.remoteRolloff, range: 0.3...2.0, format: "%.2f")
             } else {
                 tuningSlider("Gain", value: $controller.gain, range: 0.05...0.6, format: "%.2f")
                 tuningSlider("High-shelf gain", value: $controller.shelfGainDb, range: -12...12, format: "%+.0f dB", step: 1)
