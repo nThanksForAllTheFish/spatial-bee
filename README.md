@@ -1,8 +1,30 @@
-# Spatial Bee
+# Spatial Bee / Jedi Training
 
-An iPhone prototype that synthesizes a bee or mosquito and renders it binaurally over
-headphones, with the insect's direction set by where the phone is pointing. Phone
-orientation only; no headphone head tracking in this version.
+An iPhone app in two modes. Explore synthesizes a bee or mosquito and renders it
+binaurally over headphones, with the insect's direction set by where the phone is
+pointing. Training recreates the Millennium Falcon scene: a remote flies itself around
+your head, hovers, charges and fires, and the phone is the saber. AirPods head tracking
+keeps the remote fixed in the room as you turn.
+
+## Training mode
+
+`SpatialBee/TrainingGame.swift` is the state machine: patrol (slerp between random
+directions on a sphere at a configured angular speed), hover (random length), charge (a
+rising tone for the configured warning time), fire, resolve. A bolt is blocked when the
+angle between the phone's pointing direction and the remote's direction is inside the
+block cone at the moment of fire. Each shot records blocked or hit, the reaction time from
+the charge cue to the saber first entering the cone, and the angular error at fire.
+
+Sounds are synthesized (`RemoteSynth.swift`, `OneShots`): the remote's fluttering whine
+with a whoosh that follows its angular speed and a charge tone; a bolt from the remote's
+position; a saber clash at the saber's position on a block; a stun buzz close to the head
+on a hit. `Haptics.swift` adds a sharp tap for a block and a half-second rumble for a hit.
+An optional saber hum is spatialized along the pointing direction so you can hear where
+the blade is with your eyes shut. Blast shield blanks the screen; double-tap lifts it.
+
+Difficulty lives in `config.json` under `training`: remote speed, hover range, charge
+warning, block cone, bolts per round, elevation band. The Tuning section exposes charge
+warning, block cone and remote speed as live sliders in Training mode.
 
 ## What is in the project
 

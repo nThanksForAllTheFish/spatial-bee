@@ -7,7 +7,7 @@ import simd
 enum SpatialRenderer: String, CaseIterable, Identifiable {
     /// High-quality HRTF, the classic AVAudioEngine binaural renderer.
     case hrtfHQ
-    /// The older, lighter HRTF variant.
+    /// The older, lighter HRTF variant. Judged clearest for front-back on AirPods Pro.
     case hrtf
     /// Automatic algorithm with the output type forced to headphones. On iOS 13+ this
     /// engages the newer spatial renderer used by system spatial audio.
@@ -34,12 +34,12 @@ enum SpatialRenderer: String, CaseIterable, Identifiable {
 
 /// Owns the AVAudioEngine graph:
 ///
-///     InsectSynth (mono source) -> AVAudioEnvironmentNode (HRTF) -> main mixer -> output
+///     insect / remote / saber (mono source nodes)  ─┐
+///     bolt / clash / stun   (mono player nodes)     ─┴─> AVAudioEnvironmentNode (HRTF) -> main mixer -> output
 ///
-/// The environment node renders the mono source binaurally for the listener at the
-/// origin. The listener faces -z with +y up and +x to the right, the same frame
-/// OpenAL and SceneKit use. Head tracking is not used in this prototype, so the
-/// listener orientation stays at identity and only the source moves.
+/// The environment node renders every mono input binaurally for a listener at the
+/// origin. The listener faces -z with +y up and +x to the right. Head tracking turns the
+/// listener; every source position is in the aligned frame.
 @MainActor
 final class SpatialAudioEngine: ObservableObject {
 
@@ -48,18 +48,47 @@ final class SpatialAudioEngine: ObservableObject {
     @Published private(set) var outputRouteText = "—"
     @Published private(set) var outputIsHeadphones = false
 
+    /// Explore mode insect.
     let synth: InsectSynth
+    /// Training mode remote.
+    let remoteSynth: RemoteSynth
+    /// Training mode saber hum, an InsectSynth with a low fundamental.
+    let saberSynth: InsectSynth
 
     private let engine = AVAudioEngine()
     private let environment = AVAudioEnvironmentNode()
-    private var source: AVAudioSourceNode?
+    private var insectSource: AVAudioSourceNode?
+    private var remoteSource: AVAudioSourceNode?
+    private var saberSource: AVAudioSourceNode?
+    private let boltPlayer = AVAudioPlayerNode()
+    private let clashPlayer = AVAudioPlayerNode()
+    private let stunPlayer = AVAudioPlayerNode()
+    private var boltBuffer: AVAudioPCMBuffer?
+    private var clashBuffer: AVAudioPCMBuffer?
+    private var stunBuffer: AVAudioPCMBuffer?
+    private var graphBuilt = false
     private var routeObserver: NSObjectProtocol?
 
+    private var spatialNodes: [AVAudioNode] {
+        [insectSource, remoteSource, saberSource].compactMap { $0 } + [boltPlayer, clashPlayer, stunPlayer]
+    }
+
     init() {
-        // Build the synth at the hardware rate so no resampling sits in the path.
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default, options: [])
-        synth = InsectSynth(sampleRate: session.sampleRate > 0 ? session.sampleRate : 48_000)
+        let rate = session.sampleRate > 0 ? session.sampleRate : 48_000
+        synth = InsectSynth(sampleRate: rate)
+        remoteSynth = RemoteSynth(sampleRate: rate)
+        saberSynth = InsectSynth(sampleRate: rate)
+        saberSynth.setHarmonics(count: 12, rolloff: 1.3)
+        var sp = saberSynth.params
+        sp.f0 = 92
+        sp.pitchWander = 0.006
+        sp.noiseLevel = 0.03
+        sp.noiseCutoffHz = 1500
+        sp.cutoffHz = 3500
+        sp.gain = 0
+        saberSynth.params = sp
         observeRoute()
         updateRouteText()
     }
@@ -76,6 +105,7 @@ final class SpatialAudioEngine: ObservableObject {
 
             buildGraphIfNeeded()
             try engine.start()
+            for player in [boltPlayer, clashPlayer, stunPlayer] { player.play() }
             isRunning = true
             statusText = describeRendering()
         } catch {
@@ -85,19 +115,20 @@ final class SpatialAudioEngine: ObservableObject {
 
     func stop() {
         guard isRunning else { return }
+        for player in [boltPlayer, clashPlayer, stunPlayer] { player.stop() }
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isRunning = false
         statusText = "Stopped"
     }
 
-    /// Place the insect. Coordinates are meters in the listener frame described above.
-    func setSourcePosition(_ p: AVAudio3DPoint) {
-        source?.position = p
-    }
+    // MARK: Positions (meters, aligned listener frame)
 
-    /// Turn the listener. Vectors are in the same frame as source positions; identity
-    /// is forward (0, 0, -1), up (0, 1, 0). Head tracking drives this.
+    func setInsectPosition(_ p: SIMD3<Double>) { insectSource?.position = point(p) }
+    func setRemotePosition(_ p: SIMD3<Double>) { remoteSource?.position = point(p) }
+    func setSaberPosition(_ p: SIMD3<Double>) { saberSource?.position = point(p) }
+
+    /// Turn the listener. Identity is forward (0, 0, -1), up (0, 1, 0).
     func setListenerOrientation(forward: SIMD3<Double>, up: SIMD3<Double>) {
         environment.listenerVectorOrientation = AVAudio3DVectorOrientation(
             forward: AVAudio3DVector(x: Float(forward.x), y: Float(forward.y), z: Float(forward.z)),
@@ -109,11 +140,34 @@ final class SpatialAudioEngine: ObservableObject {
         setListenerOrientation(forward: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0))
     }
 
+    // MARK: One-shots
+
+    func playBolt(at p: SIMD3<Double>) { play(boltPlayer, boltBuffer, at: p) }
+    func playClash(at p: SIMD3<Double>) { play(clashPlayer, clashBuffer, at: p) }
+    func playStun(at p: SIMD3<Double>) { play(stunPlayer, stunBuffer, at: p) }
+
+    private func play(_ player: AVAudioPlayerNode, _ buffer: AVAudioPCMBuffer?, at p: SIMD3<Double>) {
+        guard isRunning, let buffer else { return }
+        player.position = point(p)
+        player.scheduleBuffer(buffer, at: nil, options: .interrupts)
+        if !player.isPlaying { player.play() }
+    }
+
+    // MARK: Renderer and tuning
+
     var renderer: SpatialRenderer = .hrtfHQ {
         didSet { applyRenderer() }
     }
 
-    /// Spatial parameters from the tuning config: distance model and reverb.
+    private func applyRenderer() {
+        guard graphBuilt else { return }
+        environment.outputType = .headphones
+        for node in spatialNodes {
+            (node as? AVAudioMixing)?.renderingAlgorithm = renderer.algorithm
+        }
+        if isRunning { statusText = describeRendering() }
+    }
+
     var tuning = TuningConfig.defaults {
         didSet { applyTuning() }
     }
@@ -125,60 +179,65 @@ final class SpatialAudioEngine: ObservableObject {
         distance.maximumDistance = Float(tuning.distance.maximumDistance)
         distance.rolloffFactor = Float(tuning.distance.rolloffFactor)
         environment.reverbParameters.level = Float(tuning.reverbLevelDb)
-        source?.reverbBlend = Float(tuning.reverbBlend)
-    }
-
-    private func applyRenderer() {
-        guard let source else { return }
-        // Output type is consulted only by the Auto algorithm. Headphones is the truth
-        // here; Bluetooth routes would otherwise be guessed at.
-        environment.outputType = .headphones
-        source.renderingAlgorithm = renderer.algorithm
-        if isRunning { statusText = describeRendering() }
+        for node in spatialNodes {
+            (node as? AVAudioMixing)?.reverbBlend = Float(tuning.reverbBlend)
+        }
+        var rp = remoteSynth.params
+        rp.gain = tuning.training.remoteGain
+        remoteSynth.params = rp
     }
 
     // MARK: Graph
 
     private func buildGraphIfNeeded() {
-        guard source == nil else { return }
+        guard !graphBuilt else { return }
 
-        let node = synth.makeSourceNode()
-        source = node
-
-        engine.attach(node)
-        engine.attach(environment)
+        let insect = synth.makeSourceNode()
+        let remote = remoteSynth.makeSourceNode()
+        let saber = saberSynth.makeSourceNode()
+        insectSource = insect
+        remoteSource = remote
+        saberSource = saber
 
         let hardwareRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
         let mono = AVAudioFormat(standardFormatWithSampleRate: hardwareRate, channels: 1)!
         let stereo = AVAudioFormat(standardFormatWithSampleRate: hardwareRate, channels: 2)!
 
-        // Source must be mono for the environment node to spatialize it.
-        engine.connect(node, to: environment, format: mono)
+        boltBuffer = OneShots.bolt(sampleRate: hardwareRate)
+        clashBuffer = OneShots.clash(sampleRate: hardwareRate)
+        stunBuffer = OneShots.stun(sampleRate: hardwareRate)
+
+        engine.attach(environment)
+        for node in [insect, remote, saber] as [AVAudioNode] + [boltPlayer, clashPlayer, stunPlayer] {
+            engine.attach(node)
+            engine.connect(node, to: environment, format: mono)
+        }
         engine.connect(environment, to: engine.mainMixerNode, format: stereo)
 
-        // Listener: origin, facing -z, head up +y.
         environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
-        environment.listenerVectorOrientation = AVAudio3DVectorOrientation(
-            forward: AVAudio3DVector(x: 0, y: 0, z: -1),
-            up: AVAudio3DVector(x: 0, y: 1, z: 0)
-        )
-
-        // A touch of small-room reverb helps the source sit outside the head.
+        resetListenerOrientation()
         environment.reverbParameters.enable = true
         environment.reverbParameters.loadFactoryReverbPreset(.smallRoom)
 
-        node.sourceMode = .pointSource
-        node.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
+        for node in spatialNodes {
+            (node as? AVAudioMixing)?.sourceMode = .pointSource
+            (node as? AVAudioMixing)?.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
+        }
+
+        graphBuilt = true
         applyTuning()
         applyRenderer()
-
         engine.prepare()
     }
 
+    private func point(_ p: SIMD3<Double>) -> AVAudio3DPoint {
+        AVAudio3DPoint(x: Float(p.x), y: Float(p.y), z: Float(p.z))
+    }
+
     private func describeRendering() -> String {
-        guard let source else { return "No source" }
+        guard let insectSource else { return "No source" }
         let algorithm: String
-        switch source.renderingAlgorithm {
+        switch insectSource.renderingAlgorithm {
         case .HRTFHQ: algorithm = "HRTF-HQ"
         case .HRTF: algorithm = "HRTF"
         case .sphericalHead: algorithm = "Spherical head"

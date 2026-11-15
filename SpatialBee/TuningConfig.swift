@@ -18,6 +18,27 @@ struct TuningConfig: Codable, Equatable {
         var frequencyHz: Double = 5000
         var gainDb: Double = 0
     }
+    struct Training: Codable, Equatable {
+        /// Remote distance from the head, meters.
+        var remoteRadius: Double = 1.0
+        /// Angular speed of a dart, degrees per second.
+        var remoteSpeedDegPerSec: Double = 150
+        var hoverSecondsMin: Double = 0.8
+        var hoverSecondsMax: Double = 2.5
+        /// Warning time from the charge cue to the bolt.
+        var chargeSeconds: Double = 0.9
+        /// Half-angle of the block cone, degrees.
+        var blockConeDeg: Double = 25
+        var boltsPerRound: Int = 10
+        var elevationMinDeg: Double = -25
+        var elevationMaxDeg: Double = 60
+        var resolveSeconds: Double = 0.8
+        var remoteGain: Double = 0.25
+        var saberHumGain: Double = 0.12
+        /// Saber hum sits this far from the head along the pointing direction.
+        var saberRadius: Double = 0.5
+    }
+
     struct Species: Codable, Equatable {
         var f0: Double
         var harmonicCount: Int
@@ -35,6 +56,7 @@ struct TuningConfig: Codable, Equatable {
     var distance = Distance()
     var wobble = Wobble()
     var highShelf = HighShelf()
+    var training = Training()
     var species: [String: Species] = [
         "bee": Species(f0: 230, harmonicCount: 40, harmonicRolloff: 0.8, noiseLevel: 0.18, noiseCutoffHz: 9000, pitchWander: 0.05),
         "mosquito": Species(f0: 620, harmonicCount: 16, harmonicRolloff: 1.0, noiseLevel: 0.06, noiseCutoffHz: 10000, pitchWander: 0.08),
@@ -61,6 +83,7 @@ struct TuningConfig: Codable, Equatable {
         distance = try c.decodeIfPresent(Distance.self, forKey: .distance) ?? d.distance
         wobble = try c.decodeIfPresent(Wobble.self, forKey: .wobble) ?? d.wobble
         highShelf = try c.decodeIfPresent(HighShelf.self, forKey: .highShelf) ?? d.highShelf
+        training = try c.decodeIfPresent(Training.self, forKey: .training) ?? d.training
         species = try c.decodeIfPresent([String: Species].self, forKey: .species) ?? d.species
     }
 }

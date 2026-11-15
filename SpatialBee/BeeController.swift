@@ -3,29 +3,51 @@ import Combine
 import QuartzCore
 import simd
 
-/// Glue between the phone's pointing direction and the spatial audio source, plus the
-/// owner of the tuning config.
+enum AppMode: String, CaseIterable, Identifiable {
+    case explore, training
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .explore: return "Explore"
+        case .training: return "Training"
+        }
+    }
+}
+
+/// Hub for both modes.
 ///
-/// Every frame it takes the world-frame pointing vector (or a synthetic orbit when
-/// Auto-orbit is on), expresses it in the listener's frame, holds azimuth steady near
-/// the zenith, pushes it out to a chosen radius, adds a small random-walk wobble so the
-/// insect never sits perfectly still, and hands the result to the audio engine. Radial
-/// velocity drives a Doppler ratio on the synthesizer.
+/// Explore: the phone's pointing direction places the insect.
+/// Training: the remote flies itself (TrainingGame); the phone is the saber, and the
+/// block test compares the pointing direction with the remote's direction when it fires.
+///
+/// Every frame: pointing vector from the phone, expressed in the listener frame aligned
+/// at Re-center, with azimuth held near the zenith; head rotation from the AirPods turns
+/// the listener; positions go to the engine.
 @MainActor
 final class BeeController: ObservableObject {
 
     let audio = SpatialAudioEngine()
     let motion = MotionTracker()
     let head = HeadTracker()
+    let game = TrainingGame()
+    let haptics = Haptics()
+
+    // MARK: Mode
+
+    @Published var mode: AppMode = .explore {
+        didSet {
+            if mode == .explore { game.abort() }
+            pushSynthParams()
+            pushSaberParams()
+        }
+    }
 
     // MARK: User settings
 
     @Published var species: InsectSpecies = .bee {
         didSet { applySpecies() }
     }
-    /// Distance from the head center, meters.
     @Published var radius: Double = 0.6
-    /// Low-pass on the insect before spatialization, Hz.
     @Published var bandwidthHz: Double = 16_000 {
         didSet { audio.synth.params.cutoffHz = bandwidthHz }
     }
@@ -35,13 +57,8 @@ final class BeeController: ObservableObject {
     @Published var renderer: SpatialRenderer = .hrtfHQ {
         didSet { audio.renderer = renderer }
     }
-    /// When on, the insect circles the head on its own. Useful in the simulator,
-    /// which has no motion sensors, and as a sanity check on a device.
     @Published var autoOrbit = false
-    /// Revolutions per second for auto-orbit. Positive is counterclockwise seen from above.
     @Published var orbitRate: Double = 0.15
-    /// Drive the listener orientation from AirPods head motion so the insect stays put
-    /// in the room when the head turns.
     @Published var headTracking = false {
         didSet {
             if headTracking {
@@ -54,6 +71,12 @@ final class BeeController: ObservableObject {
             }
         }
     }
+    /// Training: a low hum spatialized at the saber so you can hear where it is.
+    @Published var saberHum = true {
+        didSet { pushSaberParams() }
+    }
+    /// Training: blank the screen.
+    @Published var blastShield = false
 
     // MARK: Tuning (mirrors of the config, editable live)
 
@@ -68,14 +91,20 @@ final class BeeController: ObservableObject {
     @Published var harmonicRolloff: Double = 0.8 { didSet { if !applying { updateSpecies { $0.harmonicRolloff = harmonicRolloff } } } }
     @Published var noiseLevel: Double = 0.18 { didSet { if !applying { updateSpecies { $0.noiseLevel = noiseLevel } } } }
     @Published var wobbleLimitCm: Double = 8 { didSet { if !applying { config.wobble.limitCm = wobbleLimitCm } } }
+    @Published var chargeSeconds: Double = 0.9 { didSet { if !applying { config.training.chargeSeconds = chargeSeconds; game.params = config.training } } }
+    @Published var blockConeDeg: Double = 25 { didSet { if !applying { config.training.blockConeDeg = blockConeDeg; game.params = config.training } } }
+    @Published var remoteSpeed: Double = 150 { didSet { if !applying { config.training.remoteSpeedDegPerSec = remoteSpeed; game.params = config.training } } }
 
     // MARK: Readouts
 
     @Published private(set) var isRunning = false
+    /// Explore: the insect. Training: the remote.
     @Published private(set) var azimuthDegrees: Double = 0
     @Published private(set) var elevationDegrees: Double = 0
     @Published private(set) var distanceMeters: Double = 0
-    /// Head yaw since Re-center, positive turning right.
+    /// Training: where the saber points.
+    @Published private(set) var saberAzimuthDegrees: Double = 0
+    @Published private(set) var saberElevationDegrees: Double = 0
     @Published private(set) var headYawDegrees: Double = 0
     @Published private(set) var headPitchDegrees: Double = 0
 
@@ -91,8 +120,18 @@ final class BeeController: ObservableObject {
     private var lastTimestamp: CFTimeInterval?
     private var smoothedRadialVelocity: Double = 0
     private var applying = false
+    private var lastLoaded = TuningConfig.defaults
+    private var cancellables = Set<AnyCancellable>()
 
     init() {
+        // Nested observable objects do not propagate on their own.
+        for child in [audio.objectWillChange.eraseToAnyPublisher(),
+                      head.objectWillChange.eraseToAnyPublisher(),
+                      motion.objectWillChange.eraseToAnyPublisher(),
+                      game.objectWillChange.eraseToAnyPublisher()] {
+            child.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        }
+        game.onEvent = { [weak self] event in self?.handle(event) }
         applyConfig(TuningConfig.defaults, status: "Built-in defaults")
         Task { await reloadConfig() }
     }
@@ -111,12 +150,9 @@ final class BeeController: ObservableObject {
         }
     }
 
-    /// Discard live edits and go back to the last loaded config.
     func resetToLoadedConfig() {
         applyConfig(lastLoaded, status: configStatus)
     }
-
-    private var lastLoaded = TuningConfig.defaults
 
     private func applyConfig(_ c: TuningConfig, status: String) {
         applying = true
@@ -128,14 +164,19 @@ final class BeeController: ObservableObject {
         renderer = SpatialRenderer(rawValue: c.renderer) ?? .hrtfHQ
         audio.renderer = renderer
         audio.tuning = c
+        game.params = c.training
 
         gain = c.gain
         reverbBlend = c.reverbBlend
         shelfGainDb = c.highShelf.gainDb
         shelfFrequencyHz = c.highShelf.frequencyHz
         wobbleLimitCm = c.wobble.limitCm
+        chargeSeconds = c.training.chargeSeconds
+        blockConeDeg = c.training.blockConeDeg
+        remoteSpeed = c.training.remoteSpeedDegPerSec
 
         applySpecies()
+        pushSaberParams()
     }
 
     private func applySpecies() {
@@ -164,11 +205,17 @@ final class BeeController: ObservableObject {
         p.pitchWander = s.pitchWander
         p.noiseLevel = s.noiseLevel
         p.noiseCutoffHz = s.noiseCutoffHz
-        p.gain = config.gain
+        p.gain = mode == .explore ? config.gain : 0
         p.cutoffHz = bandwidthHz
         p.shelfFrequencyHz = config.highShelf.frequencyHz
         p.shelfGainDb = config.highShelf.gainDb
         audio.synth.params = p
+    }
+
+    private func pushSaberParams() {
+        var p = audio.saberSynth.params
+        p.gain = (mode == .training && saberHum) ? config.training.saberHumGain : 0
+        audio.saberSynth.params = p
     }
 
     // MARK: Control
@@ -178,8 +225,8 @@ final class BeeController: ObservableObject {
         audio.renderer = renderer
         motion.axis = pointingAxis
         audio.start()
+        audio.tuning = config
         if headTracking { head.start() }
-        audio.tuning = config   // nodes exist now; re-apply reverb blend on the source
         motion.start()
         if !hasCenteredOnce {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -192,6 +239,7 @@ final class BeeController: ObservableObject {
 
     func stop() {
         guard isRunning else { return }
+        game.abort()
         displayLink?.invalidate()
         displayLink = nil
         motion.stop()
@@ -201,14 +249,50 @@ final class BeeController: ObservableObject {
     }
 
     /// Make "straight ahead" the direction the phone is pointing right now, and, with
-    /// head tracking on, the direction the head is facing right now. Do both at once:
-    /// look at the phone while pointing it forward.
+    /// head tracking on, the direction the head is facing right now.
     func recenter() {
         let p = motion.pointing
         forwardYaw = atan2(p.y, p.x)
         hasCenteredOnce = true
         head.align()
     }
+
+    func startRound() {
+        guard isRunning, mode == .training else { return }
+        game.params = config.training
+        game.startRound()
+    }
+
+    func abortRound() {
+        game.abort()
+        audio.remoteSynth.charge = 0
+        audio.remoteSynth.motion = 0
+    }
+
+    // MARK: Game events
+
+    private func handle(_ event: TrainingGame.Event) {
+        switch event {
+        case .dart, .chargeStart, .roundOver:
+            break
+        case .fire(let blocked):
+            let remotePosition = game.remoteDirection * config.training.remoteRadius
+            audio.playBolt(at: remotePosition)
+            let saberPosition = lastSaberDirection * config.training.saberRadius
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+                guard let self else { return }
+                if blocked {
+                    self.audio.playClash(at: saberPosition)
+                    self.haptics.block()
+                } else {
+                    self.audio.playStun(at: SIMD3(0, -0.1, -0.15))
+                    self.haptics.hit()
+                }
+            }
+        }
+    }
+
+    private var lastSaberDirection = SIMD3<Double>(0, 0, -1)
 
     // MARK: Per-frame update
 
@@ -224,9 +308,9 @@ final class BeeController: ObservableObject {
         let dt = lastTimestamp.map { max(1e-3, now - $0) } ?? (1.0 / 60.0)
         lastTimestamp = now
 
-        // 1. Direction in the listener frame (x right, y up, z backward).
+        // 1. Pointing direction in the aligned listener frame.
         let rawDirection: SIMD3<Double>
-        if autoOrbit || !motion.isAvailable {
+        if mode == .explore && (autoOrbit || !motion.isAvailable) {
             orbitAngle += 2 * .pi * orbitRate * dt
             let bob = 0.15 * sin(orbitAngle * 0.7)
             rawDirection = simd_normalize(SIMD3(sin(orbitAngle), bob, -cos(orbitAngle)))
@@ -234,8 +318,7 @@ final class BeeController: ObservableObject {
             rawDirection = worldToListener(motion.pointing)
         }
 
-        // 1b. Pole handling: smooth the horizontal direction with a time constant that
-        // grows as cos^2(el) shrinks, so azimuth holds near the zenith instead of spinning.
+        // 1b. Pole handling: hold azimuth near the zenith.
         let sinEl = max(-1, min(1, rawDirection.y))
         let cosEl = sqrt(max(0, 1 - sinEl * sinEl))
         let rawHorizontal = SIMD2(rawDirection.x, rawDirection.z)
@@ -250,8 +333,25 @@ final class BeeController: ObservableObject {
         }
         let direction = SIMD3(azimuthDir.x * cosEl, sinEl, azimuthDir.y * cosEl)
 
-        // 2. Random-walk wobble; horizontal part scaled by cos(el) so it cannot swing
-        // azimuth at the pole.
+        // 2. Head orientation.
+        if headTracking, head.hasSample {
+            let rel = head.relativeRotation
+            let forward = simd_normalize(rel * SIMD3(0, 0, -1))
+            let up = simd_normalize(rel * SIMD3(0, 1, 0))
+            audio.setListenerOrientation(forward: forward, up: up)
+            headYawDegrees = atan2(forward.x, -forward.z) * 180 / .pi
+            headPitchDegrees = asin(max(-1, min(1, forward.y))) * 180 / .pi
+        }
+
+        switch mode {
+        case .explore:
+            tickExplore(direction: direction, cosEl: cosEl, dt: dt)
+        case .training:
+            tickTraining(direction: direction, dt: dt)
+        }
+    }
+
+    private func tickExplore(direction: SIMD3<Double>, cosEl: Double, dt: Double) {
         let step = config.wobble.stepCm / 100
         wobble += SIMD3(
             Double.random(in: -step...step),
@@ -267,7 +367,6 @@ final class BeeController: ObservableObject {
         let position = direction * radius + shapedWobble
         let distance = simd_length(position)
 
-        // 3. Doppler from radial velocity. Positive velocity is receding.
         if let last = lastDistance {
             let radialVelocity = (distance - last) / dt
             smoothedRadialVelocity += (radialVelocity - smoothedRadialVelocity) * 0.2
@@ -276,27 +375,36 @@ final class BeeController: ObservableObject {
         let speedOfSound = 343.0
         audio.synth.dopplerRatio = speedOfSound / (speedOfSound + smoothedRadialVelocity)
 
-        // 4. Push to the engine and the readouts.
-        audio.setSourcePosition(AVAudio3DPoint(x: Float(position.x), y: Float(position.y), z: Float(position.z)))
-
-        // 5. Listener orientation from the head, relative to the Re-center pose. The source
-        // stays in the aligned frame, so turning the head leaves the insect where it is.
-        if headTracking, head.hasSample {
-            let rel = head.relativeRotation
-            let forward = simd_normalize(rel * SIMD3(0, 0, -1))
-            let up = simd_normalize(rel * SIMD3(0, 1, 0))
-            audio.setListenerOrientation(forward: forward, up: up)
-            headYawDegrees = atan2(forward.x, -forward.z) * 180 / .pi
-            headPitchDegrees = asin(max(-1, min(1, forward.y))) * 180 / .pi
-        }
-
-        let horizontal = sqrt(position.x * position.x + position.z * position.z)
-        azimuthDegrees = atan2(position.x, -position.z) * 180 / .pi
-        elevationDegrees = atan2(position.y, horizontal) * 180 / .pi
-        distanceMeters = distance
+        audio.setInsectPosition(position)
+        publish(target: position, saber: nil)
     }
 
-    /// Convert a world-frame unit vector (z up) into the listener frame.
+    private func tickTraining(direction: SIMD3<Double>, dt: Double) {
+        lastSaberDirection = direction
+        game.update(dt: dt, saberDirection: direction)
+
+        let remotePosition = game.remoteDirection * config.training.remoteRadius
+        audio.setRemotePosition(remotePosition)
+        audio.setSaberPosition(direction * config.training.saberRadius)
+        audio.remoteSynth.motion = game.motionLevel
+        audio.remoteSynth.charge = game.chargeLevel
+
+        publish(target: remotePosition, saber: direction)
+    }
+
+    private func publish(target: SIMD3<Double>, saber: SIMD3<Double>?) {
+        let horizontal = sqrt(target.x * target.x + target.z * target.z)
+        azimuthDegrees = atan2(target.x, -target.z) * 180 / .pi
+        elevationDegrees = atan2(target.y, horizontal) * 180 / .pi
+        distanceMeters = simd_length(target)
+        if let saber {
+            let h = sqrt(saber.x * saber.x + saber.z * saber.z)
+            saberAzimuthDegrees = atan2(saber.x, -saber.z) * 180 / .pi
+            saberElevationDegrees = atan2(saber.y, h) * 180 / .pi
+        }
+    }
+
+    /// Convert a world-frame unit vector (z up) into the aligned listener frame.
     private func worldToListener(_ v: SIMD3<Double>) -> SIMD3<Double> {
         let forward = SIMD3(cos(forwardYaw), sin(forwardYaw), 0.0)
         let up = SIMD3(0.0, 0.0, 1.0)
