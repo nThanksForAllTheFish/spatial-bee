@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "note": "Fetched by the native app and the web page at start and on Reload. Edit, push, tap Reload.",
-  "renderer": "hrtfHQ",
+  "renderer": "hrtf",
   "gain": 0.22,
   "reverbBlend": 0.12,
   "reverbLevelDb": -24,
