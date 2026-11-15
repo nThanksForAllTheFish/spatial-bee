@@ -54,9 +54,6 @@ final class BeeController: ObservableObject {
             }
         }
     }
-    /// First-run insurance: flips the sense of head rotation if the frame convention
-    /// turns out to be the other way round.
-    @Published var invertHead = false
 
     // MARK: Tuning (mirrors of the config, editable live)
 
@@ -285,8 +282,7 @@ final class BeeController: ObservableObject {
         // 5. Listener orientation from the head, relative to the Re-center pose. The source
         // stays in the aligned frame, so turning the head leaves the insect where it is.
         if headTracking, head.hasSample {
-            var rel = head.relativeRotation
-            if invertHead { rel = rel.transpose }
+            let rel = head.relativeRotation
             let forward = simd_normalize(rel * SIMD3(0, 0, -1))
             let up = simd_normalize(rel * SIMD3(0, 1, 0))
             audio.setListenerOrientation(forward: forward, up: up)

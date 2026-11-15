@@ -79,8 +79,7 @@ the phone's forward direction; afterwards only the rotation since that snapshot 
 `listenerVectorOrientation`, while the insect's position stays in the aligned frame. The
 result is a source that holds still in the room when the head turns, which is the cue
 that resolves front-back confusion. Toggle it in Control; the Status section shows the
-sample rate. The Invert toggle exists for the first device run in case the frame
-convention is the other way round; remove it once settled.
+sample rate. The frame convention was verified on AirPods Pro on 2026-11-14.
 
 ## Next steps
 

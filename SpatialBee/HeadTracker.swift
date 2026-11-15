@@ -14,8 +14,7 @@ import simd
 /// Headphone device axes are taken as x right, y up, z backward (out the back of the
 /// head), which matches the audio listener frame. The matrix convention follows what the
 /// phone test established for CMAttitude: the raw matrix maps reference into device, so
-/// relative = M_align * M_nowᵀ. The Invert toggle in the UI flips this if the first device
-/// run shows the head turning the wrong way.
+/// relative = M_align * M_nowᵀ. Verified on AirPods Pro 2026-11-14.
 @MainActor
 final class HeadTracker: NSObject, ObservableObject, CMHeadphoneMotionManagerDelegate {
 

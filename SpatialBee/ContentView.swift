@@ -63,9 +63,6 @@ struct ContentView: View {
 
                     Toggle("Head tracking (AirPods)", isOn: $controller.headTracking)
                         .disabled(!controller.head.isAvailable)
-                    if controller.headTracking {
-                        Toggle("Invert head rotation", isOn: $controller.invertHead)
-                    }
 
                     Toggle("Auto-orbit", isOn: $controller.autoOrbit)
 
