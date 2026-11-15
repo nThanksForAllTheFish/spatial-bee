@@ -39,6 +39,7 @@ final class BeeController: ObservableObject {
             if mode == .explore { game.abort() }
             pushSynthParams()
             pushSaberParams()
+            pushRemoteParams()
         }
     }
 
@@ -96,7 +97,7 @@ final class BeeController: ObservableObject {
     @Published var remoteSpeed: Double = 150 { didSet { if !applying { config.training.remoteSpeedDegPerSec = remoteSpeed; game.params = config.training } } }
     @Published var remoteHiss: Double = 0.14 { didSet { if !applying { config.training.remoteHissLevel = remoteHiss; audio.tuning = config } } }
     @Published var remoteRolloff: Double = 0.9 { didSet { if !applying { config.training.remoteHarmonicRolloff = remoteRolloff; audio.tuning = config } } }
-    @Published var remoteGain: Double = 0.25 { didSet { if !applying { config.training.remoteGain = remoteGain; audio.tuning = config } } }
+    @Published var remoteGain: Double = 0.25 { didSet { if !applying { config.training.remoteGain = remoteGain; pushRemoteParams() } } }
     @Published var saberHumGain: Double = 0.12 { didSet { if !applying { config.training.saberHumGain = saberHumGain; pushSaberParams() } } }
     @Published var saberTipGain: Double = 0.18 { didSet { if !applying { config.training.saberTipGain = saberTipGain; pushSaberParams() } } }
     @Published var saberFizz: Double = 0.35 { didSet { if !applying { config.training.saberFizzLevel = saberFizz; audio.tuning = config } } }
@@ -191,6 +192,7 @@ final class BeeController: ObservableObject {
 
         applySpecies()
         pushSaberParams()
+        pushRemoteParams()
     }
 
     private func applySpecies() {
@@ -236,6 +238,15 @@ final class BeeController: ObservableObject {
         audio.tipSynth.params = t
     }
 
+    /// The remote is audible only while a round is running. Its whine has a tremolo
+    /// that is an annoyance in Explore mode and between rounds.
+    private func pushRemoteParams() {
+        let active = mode == .training && game.phase != .idle && game.phase != .roundOver
+        var p = audio.remoteSynth.params
+        p.gain = active ? config.training.remoteGain : 0
+        audio.remoteSynth.params = p
+    }
+
     // MARK: Control
 
     func start() {
@@ -279,20 +290,24 @@ final class BeeController: ObservableObject {
         guard isRunning, mode == .training else { return }
         game.params = config.training
         game.startRound()
+        pushRemoteParams()
     }
 
     func abortRound() {
         game.abort()
         audio.remoteSynth.charge = 0
         audio.remoteSynth.motion = 0
+        pushRemoteParams()
     }
 
     // MARK: Game events
 
     private func handle(_ event: TrainingGame.Event) {
         switch event {
-        case .dart, .chargeStart, .roundOver:
+        case .dart, .chargeStart:
             break
+        case .roundOver:
+            pushRemoteParams()
         case .fire(let blocked):
             let remotePosition = game.remoteDirection * config.training.remoteRadius
             audio.playBolt(at: remotePosition)

@@ -84,6 +84,7 @@ final class SpatialAudioEngine: ObservableObject {
         remoteSynth = RemoteSynth(sampleRate: rate)
         saberSynth = InsectSynth(sampleRate: rate)
         tipSynth = SaberTipSynth(sampleRate: rate)
+        remoteSynth.params.gain = 0   // the controller raises it while a round runs
         saberSynth.setHarmonics(count: 12, rolloff: 1.3)
         var sp = saberSynth.params
         sp.f0 = 92
@@ -188,8 +189,7 @@ final class SpatialAudioEngine: ObservableObject {
             (node as? AVAudioMixing)?.reverbBlend = Float(tuning.reverbBlend)
         }
         let t = tuning.training
-        var rp = remoteSynth.params
-        rp.gain = t.remoteGain
+        var rp = remoteSynth.params   // gain is set by the controller with the round state
         rp.f0 = t.remoteF0
         rp.hissLevel = t.remoteHissLevel
         rp.hissLowHz = t.remoteHissLowHz
